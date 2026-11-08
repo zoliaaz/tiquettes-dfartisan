@@ -1,0 +1,165 @@
+/* Tiquettes pour DF artisan : page sans en-tête du site ni encarts */
+body.dfa { margin: 0; }
+body.dfa main { padding-block: 8px; }
+
+/* Impression : traits de découpe dessinés à l'intérieur des étiquettes (contour décalé vers l'intérieur) au lieu
+   de bordures, pour que le pas reste exactement la largeur d'un module (18 mm…) et la hauteur exacte.
+   (pas d'ombre portée : une ombre fait passer la zone en image à basse résolution dans certaines impressions) */
+@media print {
+	body.dfa .module,
+	body.dfa .module:not(:last-of-type),
+	body.dfa .module:last-of-type,
+	body.dfa .module:first-of-type {
+		border: 0 !important;
+		box-shadow: none !important;
+		/* bordure comprise dans la largeur (box-sizing) : le pas reste exact */
+		box-sizing: border-box !important;
+		border: 0.25mm solid #aaa !important;
+		border-left-width: 0 !important;
+	}
+	body.dfa .module:first-of-type { border-left-width: 0.25mm !important; }
+}
+
+/* page de garde imprimée (Tiquettes pour DF artisan) */
+.dfa-garde { display: none; }
+@media print {
+	.dfa-garde { display: block; break-after: page; page-break-after: always; font-family: Arial, sans-serif; color: #222; padding: 10mm 2mm 0; height: calc(100vh - 2mm); overflow: hidden; box-sizing: border-box; }
+	.dfa-garde .g-haut { display: flex; justify-content: space-between; gap: 10mm; margin-bottom: 30mm; }
+	.dfa-garde .g-bloc { font-size: 10.5pt; line-height: 1.45; max-width: 85mm; }
+	.dfa-garde .g-titre { color: var(--primary-color, #008b8b); font-size: 9pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2mm; }
+	.dfa-garde .g-nom { font-weight: bold; font-size: 12pt; }
+	.dfa-garde .g-logo { max-width: 50mm; max-height: 25mm; display: block; margin-bottom: 2mm; }
+	.dfa-garde .g-titre-projet { font-weight: bold; font-size: 24pt; margin: 0 0 3mm; border-bottom: 0.6mm solid var(--primary-color, #008b8b); padding-bottom: 3mm; }
+	.dfa-garde .g-sous { font-size: 12pt; color: #555; margin-bottom: 12mm; }
+	.dfa-garde .g-infos { border-collapse: collapse; font-size: 11pt; }
+	.dfa-garde .g-infos th { text-align: left; font-weight: normal; color: #666; padding: 2mm 10mm 2mm 0; }
+	.dfa-garde .g-infos td { font-weight: bold; padding: 2mm 0; }
+	.dfa-garde .g-pied { margin-top: 40mm; font-size: 8.5pt; color: #888; }
+}
+
+/* Impression du schéma unifilaire : traits (dessinés en couleur de fond) imprimés même si le navigateur
+   n'imprime pas les arrière-plans ; sans la grille de points de l'écran */
+@media print {
+	body.dfa .schema,
+	body.dfa .schema * {
+		-webkit-print-color-adjust: exact;
+		print-color-adjust: exact;
+	}
+	body.dfa .schemaGrid {
+		background-image: none !important;
+	}
+}
+@media print {
+	/* un départ (disjoncteur et son circuit) n'est pas coupé entre deux pages */
+	body.dfa .schemaItem { break-inside: avoid; }
+}
+@media print {
+	/* schéma : moins d'espace vertical entre les groupes (différentiels…) et en haut de page */
+	body.dfa .schemaGrid { padding-top: 2mm !important; }
+	body.dfa .schemaItemSeparator { height: 6mm !important; }
+	body.dfa .schemaItemSeparator.first { height: 0 !important; }
+	body.dfa .schemaGroundLine { margin-bottom: 4mm !important; }
+	/* un départ entier (symbole, câble, appareil, libellé) reste sur la même page ;
+	   le symbole de tête d'un groupe reste avec ses départs */
+	body.dfa .schemaItemChilds > .schemaItem { break-inside: avoid; page-break-inside: avoid; }
+	body.dfa .schemaItem > .schemaItemSymbol { break-after: avoid; page-break-after: avoid; }
+}
+@media print {
+	body.dfa.dfa-schema-en-premier .schemaGrid,
+	body.dfa.dfa-schema-en-premier .schema { break-before: auto !important; page-break-before: auto !important; }
+	/* (le schéma a sa page nommée, en paysage : toute l'impression la prend, sinon le navigateur ajoute une page) */
+	body.dfa.dfa-schema-en-premier,
+	body.dfa.dfa-schema-en-premier #content,
+	body.dfa.dfa-schema-en-premier main,
+	body.dfa.dfa-schema-en-premier #root { page: schema; }
+}
+@media print {
+	/* le schéma entier ne tient pas sur une page : il peut se couper entre les départs (sinon page blanche avant) */
+	body.dfa .schemaGrid, body.dfa .schemaItem.isFirst, body.dfa .schemaItemChilds { break-inside: auto !important; page-break-inside: auto !important; }
+}
+@media print {
+	/* Firefox coupe les boîtes flexibles même avec break-inside: avoid : chaque groupe sous la tête
+	   (différentiel et ses départs, ou départ seul) devient un bloc ordinaire insécable, que Firefox
+	   comme Chrome passent en entier à la page suivante s'il ne tient pas. */
+	body.dfa .schemaItem.isFirst > .schemaItemChilds { display: block !important; orphans: 1; widows: 1; }
+	body.dfa .schemaItem.isFirst > .schemaItemChilds > .schemaItem { display: block !important; break-inside: avoid !important; page-break-inside: avoid !important; }
+}
+@media print {
+	body.dfa .schemaItem.isFirst > .schemaItemSymbol { break-after: auto !important; page-break-after: auto !important; }
+}
+
+/* sous un télérupteur ou un contacteur (symbole court) : l'icône remonte sous le fil (pas de section de câble à afficher) */
+body.dfa .schemaItem:has(> .schemaItemSymbol.dfaCourt) > .schemaItemLastWire:empty { display: none; }
+body.dfa .schemaItem:has(> .schemaItemSymbol.dfaCourt) > .schemaItemLastIconContainer .schemaItemLastIcon { margin-top: 2px; }
+@media print {
+	/* Firefox ne respecte pas « ne pas couper » à l'intérieur d'une boîte flexible ou à « overflow: hidden » :
+	   le schéma et ses conteneurs redeviennent des blocs ordinaires à l'impression */
+	body.dfa { overflow: visible !important; }
+	body.dfa .schema.printable { display: block !important; overflow: visible !important; }
+	body.dfa .schemaGrid { overflow: visible !important; }
+	/* espace avant chaque groupe (le trait d'arrivée ne touche plus les libellés du groupe d'au-dessus) */
+	body.dfa .schemaItem.isFirst > .schemaItemChilds > .schemaItem + .schemaItem { margin-top: 7mm; }
+}
+
+/* ---- schéma en folios (Tiquettes pour DF artisan) : feuilles de taille fixe, découpées avant l'impression ---- */
+@page dfaFolio {
+	size: A4 landscape;
+	margin: 7mm;
+	/* (pas les mentions de bas et haut de page de Tiquettes : le folio a les siennes) */
+	@top-center { content: none; }
+	@bottom-center { content: none; }
+}
+.dfa-folios { position: fixed; left: -100000px; top: 0; } /* (à l'écran : hors de la vue, mais mesurable) */
+.dfa-folio {
+	page: dfaFolio; width: 283mm; height: 193mm; box-sizing: border-box; overflow: hidden;
+	display: flex; flex-direction: column; font-family: Arial, sans-serif; background: #fff; color: #000;
+	break-after: page; page-break-after: always;
+}
+.dfa-folio:last-child { break-after: auto; page-break-after: auto; }
+.dfa-folio-tete { flex: none; height: 11mm; display: flex; justify-content: space-between; align-items: flex-end; padding-bottom: 1.5mm; box-sizing: border-box; border-bottom: 0.3mm solid #000; font-size: 10pt; }
+.dfa-folio-tete b { color: var(--primary-color, #008b8b); }
+.dfa-folio-contenu { flex: 1; min-height: 0; overflow: hidden; padding-top: 3mm; box-sizing: border-box; }
+.dfa-folio-pied { flex: none; height: 7mm; display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; font-size: 8pt; color: #666; }
+.dfa-folio-pied span:last-child { text-align: right; }
+/* le schéma recopié : blocs ordinaires, sans grille, sans échelle ni défilement */
+.dfa-folios .schema { display: block; padding: 0; margin: 0; overflow: visible; page: auto; zoom: 0.85; } /* (un peu réduit, comme le PDF de tiquettes.fr : plus de départs par feuille) */
+.dfa-folios .schemaGrid { display: block; padding: 0 0 0 4mm; margin: 0; width: auto; overflow: visible; background: none; transform: none; border: 0; break-before: auto; page-break-before: auto; }
+.dfa-folios .schemaItem.isFirst > .schemaItemChilds { display: block; }
+.dfa-folios .schemaItem.isFirst > .schemaItemChilds > .schemaItem { display: block; }
+.dfa-folios .schemaItem.isFirst > .schemaItemChilds > .schemaItem + .schemaItem { margin-top: 6mm; }
+.dfa-folios .schemaItemChilds .schemaItemChilds { flex-wrap: wrap; }
+.dfa-folios .schemaItemSymbolWarning, .dfa-folios .notprintable { display: none !important; }
+.dfa-folios, .dfa-folios * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+@media print {
+	.dfa-folios { position: static; left: auto; }
+	body.dfa.dfa-avec-folios .schema.printable { display: none !important; } /* le schéma de l'écran laisse la place aux folios */
+	body.dfa.dfa-avec-folios main, body.dfa.dfa-avec-folios #content, body.dfa.dfa-avec-folios #root { padding-block: 0 !important; margin-block: 0 !important; }
+}
+@media print {
+	/* (la mention « Tiquettes 2.2.9 » du pied de l'écran se posait sur les pages imprimées : la version est dans le pied des folios) */
+	body.dfa .footer { display: none !important; }
+}
+
+/* ---- options d'impression des étiquettes (Tiquettes pour DF artisan) ---- */
+.dfa-coupe, .dfa-calibres { display: none; }
+@media print {
+	body.dfa .row.dfa-avec-coupe { position: relative; overflow: visible !important; }
+	body.dfa .switchboard_row:has(.dfa-avec-coupe) { overflow: visible !important; }
+	body.dfa .dfa-coupe {
+		display: block; position: absolute; left: -8mm; width: calc(100% + 16mm); height: 0;
+		border-top: 0.2mm dashed #aaa; font-size: 7pt; line-height: 1; color: #888; text-indent: 1mm;
+		-webkit-print-color-adjust: exact; print-color-adjust: exact;
+	}
+	body.dfa .dfa-coupe::first-line { line-height: 1; }
+	body.dfa .dfa-coupe-haut { top: 0; }
+	body.dfa .dfa-coupe-bas { bottom: 0; }
+	body.dfa .dfa-coupe::before { content: "✂"; position: absolute; left: 1mm; top: -1.9mm; font-size: 8pt; background: #fff; padding: 0 0.5mm; }
+	body.dfa .dfa-calibres {
+		display: flex; margin: 0 0 2mm; height: 6mm; font: 7pt Helvetica, Arial, sans-serif; color: #969696;
+		-webkit-print-color-adjust: exact; print-color-adjust: exact;
+	}
+	body.dfa .dfa-calibres > div {
+		box-sizing: border-box; height: 6mm; display: flex; align-items: center; justify-content: center;
+		border: 0.2mm solid #dcdcdc; border-top: 0; background: #fcfcfc; white-space: nowrap; overflow: hidden;
+	}
+}
