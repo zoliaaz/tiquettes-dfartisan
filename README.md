@@ -46,7 +46,9 @@ node dfa/build.mjs
 ```
 
 Le dossier `dist-dfa/` est l'application. Pour une version à installer dans DF artisan, zippez son **contenu**
-sous le nom `Tiquettes-DF-artisan.zip` et publiez-le dans les « Releases » de ce dépôt. Dans DF artisan :
+sous le nom `Tiquettes-DF-artisan.zip` et publiez-le dans les « Releases » de ce dépôt
+([github.com/zoliaaz/tiquettes-dfartisan](https://github.com/zoliaaz/tiquettes-dfartisan)) : DF artisan le télécharge
+à l'adresse `releases/latest/download/Tiquettes-DF-artisan.zip`. Dans DF artisan :
 Paramètres > Général > Modules > « Installer / mettre à jour Tiquettes… ».
 
 ## Licence
