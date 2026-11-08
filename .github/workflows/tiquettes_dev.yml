@@ -1,0 +1,44 @@
+name: FTP Deploy (tiquettes.fr - DEV)
+
+on:
+  push:
+    branches: ["dev"]
+
+  workflow_dispatch:
+
+jobs:
+  web-deploy:
+    name: FTP Deploy (tiquettes.fr - DEV)
+
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Build dev
+        run: npm run build:dev
+      - name: Upload files
+        uses: pressidium/lftp-mirror-action@v1
+        with:
+          host: ${{ secrets.FTPSERVER }}
+          port: 22
+          user: ${{ secrets.FTPUSERNAME }}
+          pass: ${{ secrets.FTPPASSWORD }}
+          onlyNewer: true
+          settings: "sftp:auto-confirm=yes"
+          localDir: "./dist"
+          remoteDir: "/public/dev"
+          reverse: true
+          parallel: 4
+          options: --delete

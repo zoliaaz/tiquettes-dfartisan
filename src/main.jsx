@@ -1,0 +1,193 @@
+/**
+ Tiquettes - Générateur d'étiquettes pour tableaux et armoires électriques
+ Copyright (C) 2024-2026 Christophe LEMOINE
+ Modifié en novembre 2026 pour « Tiquettes pour DF artisan » (voir README.md).
+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU Affero General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU Affero General Public License for more details.
+
+ You should have received a copy of the GNU Affero General Public License
+ along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import "./others/arrayExtends.js";
+
+import { useEffect, useState } from "react";
+import ReactDOM from "react-dom/client";
+import * as semver from "semver";
+
+import App from "./App.jsx";
+
+import "./css/main.css";
+
+import * as pkg from "../package.json" with { type: "json" };
+import { statsPush } from "../public/api/stats.js";
+import NewVersionPopup from "./components/NewVersionPopup.jsx";
+import { DFA_MODE, dfaDemarrer } from "./dfa.js";
+
+function Footer() {
+	return (
+		<div
+			style={{
+				marginTop: "1em",
+				fontSize: "small",
+				color: "darkgray",
+			}}
+			className="footer"
+		>
+			{pkg.title} {pkg.version} {/*import.meta.env.VITE_APP_MODE && "(DEV)"*/}
+			<span className="not_printable">
+				{" "}
+				|{" "}
+				<a
+					href={pkg.repository.url}
+					style={{ color: "var(--primary-color)" }}
+					target="_blank"
+					rel="noopener"
+				>
+					{pkg.repository.url}
+				</a>{" "}
+				|{" "}
+				<a
+					href="https://www.gnu.org/licenses/agpl-3.0.fr.html"
+					style={{ color: "var(--primary-color)" }}
+					target="_blank"
+					rel="noopener"
+				>{`Licence ${pkg.license}`}</a>{" "}
+				|{" "}
+				<a
+					href="https://pantaflex44.github.io/Portfolio/"
+					style={{ color: "var(--primary-color)" }}
+					target="_blank"
+					rel="noopener"
+				>
+					{pkg.author} (pantaflex44)
+				</a>{" "}
+				| &copy; 2024-{new Date().getFullYear()}
+				{DFA_MODE && (
+					<>
+						{" "}
+						| Adaptation pour DF artisan :{" "}
+						<a
+							href={import.meta.env.VITE_DFA_SOURCES}
+							style={{ color: "var(--primary-color)" }}
+							target="_blank"
+							rel="noopener"
+						>
+							sources de cette version
+						</a>
+					</>
+				)}
+			</span>
+		</div>
+	);
+}
+
+export default function Main() {
+	const [newVersionAvaillable, setNewVersionAvaillable] = useState(null);
+	const [statsSended, setStatsSended] = useState(false);
+
+	useEffect(() => {
+		console.log("Mode:", import.meta.env.VITE_APP_MODE);
+		if (DFA_MODE) return; // DF artisan : hors ligne (pas de redirection, de vérification de version ni de statistiques)
+
+		//if (import.meta.env.VITE_APP_MODE !== "development") {
+		const defaultUrl = "https://www.tiquettes.fr/app/?enjoy";
+
+		const domains = ["tiquettes.fr", "www.tiquettes.fr"];
+		const pathes = [
+			"/app/",
+			"/app/infos.json",
+			"/api/",
+			"/api/stats_read.php",
+			"/app/api/stats_read.php",
+			"/dev/",
+		];
+
+		const origins = [];
+		domains.forEach((domain) => {
+			const o = `https://${domain}`;
+			origins.push(o);
+			pathes.forEach((path) => {
+				const k = `${o}${path}`;
+				origins.push(k);
+			});
+		});
+		origins.push(`http://localhost:${import.meta.env.VITE_SERVER_PORT}`);
+		origins.push(`https://localhost:${import.meta.env.VITE_SERVER_PORT}`);
+
+		const origin = window.location.origin.split("?")[0].toLowerCase().trim();
+		if (!origins.includes(origin)) window.location.replace(defaultUrl);
+		//}
+
+		fetch(`./infos.json?t=${Date.now()}`, {
+			method: "GET",
+			cache: "no-store",
+			headers: {
+				Pragma: "no-cache",
+				"Cache-Control": "no-cache",
+			},
+		})
+			.then((response) => response.json())
+			.then((json) => {
+				const currentVersion = json.version ?? "0.0.0";
+				const localVersion = pkg.version;
+
+				if (semver.gt(currentVersion, localVersion)) {
+					console.log(
+						`New version ${currentVersion} availlable ! Please force your browser to reload before using it.`,
+					);
+					setNewVersionAvaillable(currentVersion);
+				} else {
+					console.log(`You are up to date. Current version: ${currentVersion}`);
+				}
+			})
+			.catch((error) =>
+				console.error("Unable to verify app version : ", error),
+			);
+
+		if (!statsSended) {
+			setStatsSended(() => {
+				statsPush("choice", "referer", [document.referer ?? "Direct"]);
+				statsPush("user_agent");
+				statsPush("screen_size");
+				statsPush("screen_type");
+				statsPush("device_type");
+				statsPush("os");
+				statsPush("browser");
+				return true;
+			});
+		}
+	}, []);
+
+	return (
+		<>
+			<App />
+			<Footer />
+
+			{newVersionAvaillable && (
+				<NewVersionPopup
+					newVersion={newVersionAvaillable}
+					onOk={() => {
+						window.location.reload(true);
+					}}
+				/>
+			)}
+		</>
+	);
+}
+
+// DF artisan : le tableau est lu dans DF artisan avant l'affichage
+dfaDemarrer()
+	.catch((e) => {
+		console.error(e);
+		alert(`Impossible de lire ce tableau dans DF artisan : ${e.message}`);
+	})
+	.finally(() => ReactDOM.createRoot(document.getElementById("root")).render(<Main />));

@@ -1,0 +1,142 @@
+/**
+ Tiquettes - Générateur d'étiquettes pour tableaux et armoires électriques
+ Copyright (C) 2024-2026 Christophe LEMOINE
+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU Affero General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU Affero General Public License for more details.
+
+ You should have received a copy of the GNU Affero General Public License
+ along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import "../css/row.css";
+import Module from "./Module";
+import RowActionsElement from "./RowActionsElement";
+import RowAddElement from "./RowAddElement";
+
+function Row({
+	rowPosition,
+	rowIndex,
+	items,
+	theme,
+	clipboard,
+	clipboardMode,
+	isLastRow,
+	isFirstRow,
+	style = {},
+	onModuleGrow = null,
+	onModuleShrink = null,
+	moduleGrowAllowed = null,
+	moduleShrinkAllowed = null,
+	moduleMoveLeftAllowed = null,
+	moduleMoveRightAllowed = null,
+	onModuleClear = null,
+	onModuleEdit = null,
+	onModuleCopy = null,
+	onModuleCut = null,
+	onModulePaste = null,
+	onModuleInter = null,
+	onModuleInterCopy = null,
+	onModuleCancelPaste = null,
+	modulePasteAllowed = null,
+	moduleInterAllowed = null,
+	onModuleMoveLeft = null,
+	onModuleMoveRight = null,
+	onModuleHalf = null,
+	onRowAddAfter = null,
+	onRowAddBefore = null,
+	onRowDelete = null,
+	onRowMoveUp = null,
+	onRowMoveDown = null,
+	rowAddAllowed = null,
+	rowDeleteAllowed = null,
+	printFreeModuleAllowed = null,
+	hasClipboard = false,
+}) {
+	return (
+		<div
+			className={`switchboard_row row_${rowPosition}`}
+			id={`row_${rowPosition}`}
+		>
+			{rowPosition === 1 && (
+				<RowAddElement
+					onRowAdd={onRowAddBefore}
+					rowIndex={rowIndex}
+					rowAddAllowed={rowAddAllowed}
+					isFirstRow={top}
+				/>
+			)}
+
+			<RowActionsElement
+				onRowDelete={onRowDelete}
+				onRowMoveUp={onRowMoveUp}
+				onRowMoveDown={onRowMoveDown}
+				rowIndex={rowIndex}
+				rowPosition={rowPosition}
+				rowAddAllowed={rowAddAllowed}
+				rowDeleteAllowed={rowDeleteAllowed}
+				isLastRow={isLastRow}
+				isFirstRow={isFirstRow}
+			/>
+
+			<div className="row" style={style}>
+				{items.map((item, i) => (
+					<Module
+						key={i}
+						item={item}
+						modulePosition={i + 1}
+						rowPosition={rowPosition}
+						theme={theme}
+						clipboard={clipboard}
+						clipboardMode={clipboardMode}
+						style={{
+							"--h": style["--h"],
+							"--sw": style["--sw"],
+						}}
+						onGrow={(item, moduleRef) => onModuleGrow(i, item, moduleRef)}
+						onShrink={(item, moduleRef) => onModuleShrink(i, item, moduleRef)}
+						onClear={(item) => onModuleClear(i, item)}
+						onEdit={(item) => onModuleEdit(i, item)}
+						onCopy={(item) => onModuleCopy(i, item)}
+						onCut={(item) => onModuleCut(i, item)}
+						onPaste={(item) => onModulePaste(i, item)}
+						onInter={(item) => onModuleInter(i, item)}
+						onInterCopy={(item) => onModuleInterCopy(i, item)}
+						cancelPaste={() => onModuleCancelPaste()}
+						pasteAllowed={(item) => modulePasteAllowed(i, item)}
+						interAllowed={(item) => moduleInterAllowed(i, item)}
+						hasClipboard={hasClipboard}
+						shrinkAllowed={(item) => moduleShrinkAllowed(i, item)}
+						growAllowed={(item) => moduleGrowAllowed(i, item)}
+						moveLeftAllowed={(item) => moduleMoveLeftAllowed(i, item)}
+						moveRightAllowed={(item) => moduleMoveRightAllowed(i, item)}
+						onMoveLeft={(item, moduleRef) =>
+							onModuleMoveLeft(i, item, moduleRef)
+						}
+						onMoveRight={(item, moduleRef) =>
+							onModuleMoveRight(i, item, moduleRef)
+						}
+						onHalf={(item, mode) => onModuleHalf(i, item, mode)}
+						printFreeModuleAllowed={() => printFreeModuleAllowed()}
+					/>
+				))}
+			</div>
+
+			<RowAddElement
+				onRowAdd={onRowAddAfter}
+				rowIndex={rowIndex}
+				rowAddAllowed={rowAddAllowed}
+				isFirstRow={false}
+			/>
+		</div>
+	);
+}
+
+export default Row;

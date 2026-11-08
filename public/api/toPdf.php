@@ -1,0 +1,2332 @@
+<?php
+
+/**
+ * Tiquettes - Générateur d'étiquettes pour tableaux et armoires électriques
+ * Copyright (C) 2024-2026 Christophe LEMOINE
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+declare(strict_types=1);
+
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+set_time_limit(120); // 2 min
+define('EURO', chr(128));
+
+include_once('./cors.php');
+include_once('./functions.php');
+include_once('./i18n.php');
+include_once('./svg2png.php');
+
+require('./libs/fpdf19/fpdf.php');
+
+$schemaFunctions = json_decode(file_get_contents('./libs/toPdf/assets/schema_functions.json'), true);
+
+class TiquettesPDF extends FPDF
+{
+
+    private Svg2Png $svg2pngConverter;
+
+    protected mixed $javascript;
+    protected mixed $n_js;
+    protected mixed $visibility = 'all';
+    protected mixed $n_ocg_print;
+    protected mixed $n_ocg_view;
+    protected mixed $subTitle = "";
+    protected mixed $NewPageGroup = false;
+    protected mixed $PageGroups = array();
+    protected mixed $CurrPageGroup;
+
+    protected mixed $grid = false;
+    protected mixed $gridOrientation = 'L';
+    protected mixed $gridColor = [230, 230, 230];
+    protected mixed $schemaLineWidth = 0.27;
+    protected mixed $schemaLineColor = [0, 0, 0];
+    protected mixed $schemaSymbolSize = ['w' => 20.1200833333, 'h' => 25.058333333];
+    protected mixed $schemaInitialPos = ['x' => 0, 'y' => 0];
+    protected mixed $schemaCurrentPosX = 0;
+    protected mixed $schemaLastPos = [];
+    protected mixed $schemaCurrentFolio = 1;
+    protected mixed $schemaLevelsCount = 0;
+    protected mixed $showLabelsCutLines = false;
+    protected mixed $angle = 0;
+
+    public mixed $pageMargin = 10;
+    public mixed $pageBottomMargin = 12;
+
+
+    public function SetGridColor(array $color): void
+    {
+        $this->gridColor = $color;
+    }
+
+    public function SetShowCutLines(bool $show): void
+    {
+        $this->showLabelsCutLines = $show;
+    }
+
+    function __construct($orientation = 'P', $unit = 'mm', $size = 'A4')
+    {
+        global $isDev;
+
+        $this->svg2pngConverter = new Svg2Png($isDev);
+
+        $this->schemaLevelsCounterRecursive();
+
+        parent::__construct($orientation, $unit, $size);
+    }
+
+    public function Polygon(array $points, string $style = 'D'): void
+    {
+        if ($style == 'F')
+            $op = 'f';
+        elseif ($style == 'FD' || $style == 'DF')
+            $op = 'b';
+        else
+            $op = 's';
+
+        $h = $this->h;
+        $k = $this->k;
+
+        $points_string = '';
+        for ($i = 0; $i < count($points); $i += 2) {
+            $points_string .= sprintf('%.2F %.2F', $points[$i] * $k, ($h - $points[$i + 1]) * $k);
+            if ($i == 0)
+                $points_string .= ' m ';
+            else
+                $points_string .= ' l ';
+        }
+        $this->_out($points_string . $op);
+    }
+
+    public function TextWithRotation(mixed $x, mixed $y, mixed $txt, mixed  $txt_angle, int $font_angle = 0): void
+    {
+        $font_angle += 90 + $txt_angle;
+        $txt_angle *= M_PI / 180;
+        $font_angle *= M_PI / 180;
+
+        $txt_dx = cos($txt_angle);
+        $txt_dy = sin($txt_angle);
+        $font_dx = cos($font_angle);
+        $font_dy = sin($font_angle);
+
+        $s = sprintf('BT %.2F %.2F %.2F %.2F %.2F %.2F Tm (%s) Tj ET', $txt_dx, $txt_dy, $font_dx, $font_dy, $x * $this->k, ($this->h - $y) * $this->k, $this->_escape($txt));
+        if ($this->ColorFlag)
+            $s = 'q ' . $this->TextColor . ' ' . $s . ' Q';
+        $this->_out($s);
+    }
+
+    public function Rotate(mixed $angle, mixed $x = -1, mixed $y = -1): void
+    {
+        if ($x == -1)
+            $x = $this->x;
+        if ($y == -1)
+            $y = $this->y;
+        if ($this->angle != 0)
+            $this->_out('Q');
+        $this->angle = $angle;
+        if ($angle != 0) {
+            $angle *= M_PI / 180;
+            $c = cos($angle);
+            $s = sin($angle);
+            $cx = $x * $this->k;
+            $cy = ($this->h - $y) * $this->k;
+            $this->_out(sprintf('q %.5F %.5F %.5F %.5F %.2F %.2F cm 1 0 0 1 %.2F %.2F cm', $c, $s, -$s, $c, $cx, $cy, -$cx, -$cy));
+        }
+    }
+
+    public function TextWithDirection(mixed $x, mixed $y, mixed $txt, string $direction = 'R'): void
+    {
+        if ($direction == 'R')
+            $s = sprintf('BT %.2F %.2F %.2F %.2F %.2F %.2F Tm (%s) Tj ET', 1, 0, 0, 1, $x * $this->k, ($this->h - $y) * $this->k, $this->_escape($txt));
+        elseif ($direction == 'L')
+            $s = sprintf('BT %.2F %.2F %.2F %.2F %.2F %.2F Tm (%s) Tj ET', -1, 0, 0, -1, $x * $this->k, ($this->h - $y) * $this->k, $this->_escape($txt));
+        elseif ($direction == 'U')
+            $s = sprintf('BT %.2F %.2F %.2F %.2F %.2F %.2F Tm (%s) Tj ET', 0, 1, -1, 0, $x * $this->k, ($this->h - $y) * $this->k, $this->_escape($txt));
+        elseif ($direction == 'D')
+            $s = sprintf('BT %.2F %.2F %.2F %.2F %.2F %.2F Tm (%s) Tj ET', 0, -1, 1, 0, $x * $this->k, ($this->h - $y) * $this->k, $this->_escape($txt));
+        else
+            $s = sprintf('BT %.2F %.2F Td (%s) Tj ET', $x * $this->k, ($this->h - $y) * $this->k, $this->_escape($txt));
+        if ($this->ColorFlag)
+            $s = 'q ' . $this->TextColor . ' ' . $s . ' Q';
+        $this->_out($s);
+    }
+
+    public function SetDash(float|null $black = null, float|null $white = null): void
+    {
+        if ($black !== null)
+            $s = sprintf('[%.3F %.3F] 0 d', $black * $this->k, $white * $this->k);
+        else
+            $s = '[] 0 d';
+        $this->_out($s);
+    }
+
+    public function MultiCell(mixed $w, mixed $h, mixed  $txt, mixed $border = 0, mixed $align = 'J', mixed $fill = false, mixed  $maxline = 0): string
+    {
+        // Output text with automatic or explicit line breaks, at most $maxline lines
+        if (!isset($this->CurrentFont))
+            $this->Error('No font has been set');
+        $cw = $this->CurrentFont['cw'];
+        if ($w == 0)
+            $w = $this->w - $this->rMargin - $this->x;
+        $wmax = ($w - 2 * $this->cMargin) * 1000 / $this->FontSize;
+        $s = str_replace("\r", '', (string) $txt);
+        $nb = strlen($s);
+        if ($nb > 0 && $s[$nb - 1] == "\n")
+            $nb--;
+        $b = 0;
+        $b2 = '';
+        if ($border) {
+            if ($border == 1) {
+                $border = 'LTRB';
+                $b = 'LRT';
+                $b2 = 'LR';
+            } else {
+                $b2 = '';
+                if (is_int(strpos($border, 'L')))
+                    $b2 .= 'L';
+                if (is_int(strpos($border, 'R')))
+                    $b2 .= 'R';
+                $b = is_int(strpos($border, 'T')) ? $b2 . 'T' : $b2;
+            }
+        }
+        $sep = -1;
+        $i = 0;
+        $j = 0;
+        $l = 0;
+        $ns = 0;
+        $nl = 1;
+        while ($i < $nb) {
+            // Get next character
+            $c = $s[$i];
+            if ($c == "\n") {
+                // Explicit line break
+                if ($this->ws > 0) {
+                    $this->ws = 0;
+                    $this->_out('0 Tw');
+                }
+                $this->Cell($w, $h, substr($s, $j, $i - $j), $b, 2, $align, $fill);
+                $i++;
+                $sep = -1;
+                $j = $i;
+                $l = 0;
+                $ns = 0;
+                $nl++;
+                if ($border && $nl == 2)
+                    $b = $b2;
+                if ($maxline && $nl > $maxline)
+                    return substr($s, $i);
+                continue;
+            }
+            if ($c == ' ') {
+                $sep = $i;
+                $ls = $l;
+                $ns++;
+            }
+            $l += $cw[$c];
+            if ($l > $wmax) {
+                // Automatic line break
+                if ($sep == -1) {
+                    if ($i == $j)
+                        $i++;
+                    if ($this->ws > 0) {
+                        $this->ws = 0;
+                        $this->_out('0 Tw');
+                    }
+                    $this->Cell($w, $h, substr($s, $j, $i - $j), $b, 2, $align, $fill);
+                } else {
+                    if ($align == 'J') {
+                        $this->ws = ($ns > 1) ? ($wmax - $ls) / 1000 * $this->FontSize / ($ns - 1) : 0;
+                        $this->_out(sprintf('%.3F Tw', $this->ws * $this->k));
+                    }
+                    $this->Cell($w, $h, substr($s, $j, $sep - $j), $b, 2, $align, $fill);
+                    $i = $sep + 1;
+                }
+                $sep = -1;
+                $j = $i;
+                $l = 0;
+                $ns = 0;
+                $nl++;
+                if ($border && $nl == 2)
+                    $b = $b2;
+                if ($maxline && $nl > $maxline) {
+                    if ($this->ws > 0) {
+                        $this->ws = 0;
+                        $this->_out('0 Tw');
+                    }
+                    return substr($s, $i);
+                }
+            } else
+                $i++;
+        }
+        // Last chunk
+        if ($this->ws > 0) {
+            $this->ws = 0;
+            $this->_out('0 Tw');
+        }
+        if ($border && is_int(strpos($border, 'B')))
+            $b .= 'B';
+        $this->Cell($w, $h, substr($s, $j, $i - $j), $b, 2, $align, $fill);
+        $this->x = $this->lMargin;
+        return '';
+    }
+
+    public function Circle(mixed $x, mixed $y, mixed $r, mixed $style = 'D'): void
+    {
+        $this->Ellipse($x, $y, $r, $r, $style);
+    }
+
+    public function Ellipse(mixed $x, mixed $y, mixed $rx, mixed $ry, mixed $style = 'D'): void
+    {
+        if ($style == 'F')
+            $op = 'f';
+        elseif ($style == 'FD' || $style == 'DF')
+            $op = 'B';
+        else
+            $op = 'S';
+        $lx = 4 / 3 * (M_SQRT2 - 1) * $rx;
+        $ly = 4 / 3 * (M_SQRT2 - 1) * $ry;
+        $k = $this->k;
+        $h = $this->h;
+        $this->_out(sprintf(
+            '%.2F %.2F m %.2F %.2F %.2F %.2F %.2F %.2F c',
+            ($x + $rx) * $k,
+            ($h - $y) * $k,
+            ($x + $rx) * $k,
+            ($h - ($y - $ly)) * $k,
+            ($x + $lx) * $k,
+            ($h - ($y - $ry)) * $k,
+            $x * $k,
+            ($h - ($y - $ry)) * $k
+        ));
+        $this->_out(sprintf(
+            '%.2F %.2F %.2F %.2F %.2F %.2F c',
+            ($x - $lx) * $k,
+            ($h - ($y - $ry)) * $k,
+            ($x - $rx) * $k,
+            ($h - ($y - $ly)) * $k,
+            ($x - $rx) * $k,
+            ($h - $y) * $k
+        ));
+        $this->_out(sprintf(
+            '%.2F %.2F %.2F %.2F %.2F %.2F c',
+            ($x - $rx) * $k,
+            ($h - ($y + $ly)) * $k,
+            ($x - $lx) * $k,
+            ($h - ($y + $ry)) * $k,
+            $x * $k,
+            ($h - ($y + $ry)) * $k
+        ));
+        $this->_out(sprintf(
+            '%.2F %.2F %.2F %.2F %.2F %.2F c %s',
+            ($x + $lx) * $k,
+            ($h - ($y + $ry)) * $k,
+            ($x + $rx) * $k,
+            ($h - ($y + $ly)) * $k,
+            ($x + $rx) * $k,
+            ($h - $y) * $k,
+            $op
+        ));
+    }
+
+    public function IncludeJS(mixed $script): void
+    {
+        $this->javascript = $script;
+    }
+
+    public function SetVisibility(mixed $v): void
+    {
+        if ($this->visibility != 'all')
+            $this->_out('EMC');
+        if ($v == 'print')
+            $this->_out('/OC /OC1 BDC');
+        elseif ($v == 'screen')
+            $this->_out('/OC /OC2 BDC');
+        elseif ($v != 'all')
+            $this->Error('Incorrect visibility: ' . $v);
+        $this->visibility = $v;
+    }
+
+    public function StartPageGroup(): void
+    {
+        $this->NewPageGroup = true;
+    }
+
+    public function GroupPageNo(): mixed
+    {
+        return $this->PageGroups[$this->CurrPageGroup];
+    }
+
+    public function PageGroupAlias(): mixed
+    {
+        return $this->CurrPageGroup;
+    }
+
+    function _beginpage(mixed $orientation, mixed $size, mixed $rotation): void
+    {
+        parent::_beginpage($orientation, $size, $rotation);
+        if ($this->NewPageGroup) {
+            // start a new group
+            $n = sizeof($this->PageGroups) + 1;
+            $alias = "{nb$n}";
+            $this->PageGroups[$alias] = 1;
+            $this->CurrPageGroup = $alias;
+            $this->NewPageGroup = false;
+        } elseif ($this->CurrPageGroup)
+            $this->PageGroups[$this->CurrPageGroup]++;
+    }
+
+    function _putpages(): void
+    {
+        $nb = $this->page;
+        if (!empty($this->PageGroups)) {
+            // do page number replacement
+            foreach ($this->PageGroups as $k => $v) {
+                for ($n = 1; $n <= $nb; $n++) {
+                    $this->pages[$n] = str_replace($k, "{$v}", $this->pages[$n]);
+                }
+            }
+        }
+        parent::_putpages();
+    }
+
+    function _putjavascript(): void
+    {
+        $this->_newobj();
+        $this->n_js = $this->n;
+        $this->_put('<<');
+        $this->_put('/Names [(EmbeddedJS) ' . ($this->n + 1) . ' 0 R]');
+        $this->_put('>>');
+        $this->_put('endobj');
+        $this->_newobj();
+        $this->_put('<<');
+        $this->_put('/S /JavaScript');
+        $this->_put('/JS ' . $this->_textstring($this->javascript));
+        $this->_put('>>');
+        $this->_put('endobj');
+    }
+
+    function _putresources(): void
+    {
+        $this->_putocg();
+        parent::_putresources();
+        if (!empty($this->javascript)) {
+            $this->_putjavascript();
+        }
+    }
+
+    function _putresourcedict(): void
+    {
+        parent::_putresourcedict();
+        $this->_put('/Properties <</OC1 ' . $this->n_ocg_print . ' 0 R /OC2 ' . $this->n_ocg_view . ' 0 R>>');
+    }
+
+    function _putcatalog(): void
+    {
+        parent::_putcatalog();
+        if (!empty($this->javascript)) {
+            $this->_put('/Names <</JavaScript ' . ($this->n_js) . ' 0 R>>');
+        }
+        $p = $this->n_ocg_print . ' 0 R';
+        $v = $this->n_ocg_view . ' 0 R';
+        $as = "<</Event /Print /OCGs [$p $v] /Category [/Print]>> <</Event /View /OCGs [$p $v] /Category [/View]>>";
+        $this->_put("/OCProperties <</OCGs [$p $v] /D <</ON [$p] /OFF [$v] /AS [$as]>>>>");
+    }
+
+    function _endpage(): void
+    {
+        if ($this->angle != 0) {
+            $this->angle = 0;
+            $this->_out('Q');
+        }
+        $this->SetVisibility('all');
+        parent::_endpage();
+    }
+
+    function _enddoc(): void
+    {
+        if ($this->PDFVersion < '1.5')
+            $this->PDFVersion = '1.5';
+        parent::_enddoc();
+    }
+
+    function _putocg(): void
+    {
+        $this->_newobj();
+        $this->n_ocg_print = $this->n;
+        $this->_put('<</Type /OCG /Name ' . $this->_textstring('print'));
+        $this->_put('/Usage <</Print <</PrintState /ON>> /View <</ViewState /OFF>>>>>>');
+        $this->_put('endobj');
+        $this->_newobj();
+        $this->n_ocg_view = $this->n;
+        $this->_put('<</Type /OCG /Name ' . $this->_textstring('view'));
+        $this->_put('/Usage <</Print <</PrintState /OFF>> /View <</ViewState /ON>>>>>>');
+        $this->_put('endobj');
+    }
+
+    function AutoPrint(bool $dialog = false): void
+    {
+        //Open the print dialog or start printing immediately on the standard printer
+        $param = ($dialog ? 'true' : 'false');
+        $script = "print($param);";
+        $this->IncludeJS($script);
+    }
+
+    function AutoPrintToPrinter(string $server, string $printer, $dialog = false): void
+    {
+        //Print on a shared printer (requires at least Acrobat 6)
+        $script = "var pp = getPrintParams();";
+        if ($dialog)
+            $script .= "pp.interactive = pp.constants.interactionLevel.full;";
+        else
+            $script .= "pp.interactive = pp.constants.interactionLevel.automatic;";
+        $script .= "pp.printerName = '\\\\\\\\" . $server . "\\\\" . $printer . "';";
+        $script .= "print(pp);";
+        $this->IncludeJS($script);
+    }
+
+    function resize(string $imagefile, int $maxWidth, int $maxHeight): array
+    {
+        $imageDimensions = getimagesize($imagefile);
+
+        $imageWidth = $imageDimensions[0];
+        $imageHeight = $imageDimensions[1];
+
+        $imageSize['width'] = $imageWidth;
+        $imageSize['height'] = $imageHeight;
+
+        if ($imageWidth > $imageHeight) {
+            if ($imageWidth < $maxWidth)
+                $newwidth = $imageWidth;
+            else
+                $newwidth =  $maxWidth;
+
+            $divisor = $imageWidth / $newwidth;
+            $newheight = floor($imageHeight / $divisor);
+        } else {
+            if ($imageHeight < $maxHeight)
+                $newheight = $imageHeight;
+            else
+                $newheight =  $maxHeight;
+
+            $divisor = $imageHeight / $newheight;
+            $newwidth = floor($imageWidth / $divisor);
+            if ($newwidth > $maxWidth) {
+                $newwidth =  $maxWidth;
+                $divisor = $imageWidth / $newwidth;
+                $newheight = floor($imageHeight / $divisor);
+            }
+        }
+        $imageSize['width'] = (int)$newwidth;
+        $imageSize['height'] = (int)$newheight;
+
+        return $imageSize;
+    }
+
+    function svg2png(string $svgContent, string $pngFilepath, int $width = 100, int $height = 100): bool
+    {
+        if (!str_starts_with(trim($svgContent), "<?xml"))
+            $svgContent = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>' . trim($svgContent);
+
+        return $this->svg2pngConverter->Convert($svgContent, $width, $height, $pngFilepath);
+    }
+
+    function pixelToMM(int $pixel): float
+    {
+        return $pixel * 0.2645833333;
+    }
+
+    function mmToPixel(float $mm): int
+    {
+        return (int)round($mm / 0.2645833333);
+    }
+
+    function Photo(string $url, int $mm_x, int $mm_y, int $mm_mw, int $mm_mh): void
+    {
+        $photoPath = '';
+        try {
+            $pmw = $this->mmToPixel($mm_mw);
+            $pmh = $this->mmToPixel($mm_mh);
+
+            $tmpPath = './libs/toPdf/tmp/';
+            if (!is_dir($tmpPath)) {
+                mkdir($tmpPath, 0777);
+            }
+
+            $photoContent = false;
+            $urlExtension = '';
+            $urlFilename = '';
+            if (str_starts_with($url, 'data:')) {
+                $start = strpos($url, ":");
+                if ($start !== false) {
+                    $start += 1;
+                    $end = strpos($url, ',', $start);
+                    if ($end !== false) {
+                        $mimetype = substr($url, $start, $end - $start);
+                        $isb64 = str_ends_with($mimetype, ';base64');
+                        $mimetype = str_replace(';base64', '', $mimetype);
+
+                        $photoContent = explode(',', $url)[1];
+                        if ($isb64) $photoContent = base64_decode($photoContent);
+
+                        $urlExtension = mime2ext($mimetype);
+                    }
+                }
+            } else if (file_exists($url)) {
+                $photoContent = @file_get_contents($url);
+
+                $urlExtension = strtolower(pathinfo($url, PATHINFO_EXTENSION));
+                $urlFilename = strtolower(pathinfo($url, PATHINFO_FILENAME));
+            } else {
+                $ua = isset($_SERVER['HTTP_USER_AGENT'])
+                    ? $_SERVER['HTTP_USER_AGENT']
+                    : 'Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.1.13) Gecko/20080311 Firefox/2.0.0.13';
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, $url);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+                curl_setopt($ch, CURLOPT_USERAGENT, $ua);
+                $photoContent = curl_exec($ch);
+
+                $urlExtension = strtolower(pathinfo($url, PATHINFO_EXTENSION));
+                $urlFilename = strtolower(pathinfo($url, PATHINFO_FILENAME));
+            }
+            if ($photoContent === false) {
+                return;
+            }
+
+            $originalPhotoPath = $tmpPath . $urlFilename . '.' . $urlExtension;
+            $ok = false;
+            if ($urlExtension === 'svg') {
+                $photoPath = $tmpPath . $urlFilename . '.png';
+                if ($this->svg2png($photoContent, $photoPath, $pmw, $pmh) === false) {
+                    if (file_exists($photoPath)) {
+                        @unlink($photoPath);
+                    }
+                    return;
+                }
+                $ok = true;
+            } else if ($urlExtension === 'png' || $urlExtension === 'jpg' || $urlExtension === 'jpeg' || $urlExtension === 'gif') {
+                $photoPath = $originalPhotoPath;
+                if (@file_put_contents($photoPath, $photoContent) === false) {
+                    if (file_exists($photoPath)) {
+                        @unlink($photoPath);
+                    }
+                    return;
+                }
+                $ok = true;
+            } else {
+                return;
+            }
+
+            if ($ok && file_exists($photoPath)) {
+                $size = $this->resize($photoPath, $pmw, $pmh);
+                $mm_w = $this->pixelToMM($size['width']);
+                $mm_h = $this->pixelToMM($size['height']);
+                $mm_nx = $mm_x + (($mm_mw - $mm_w) / 2);
+                $mm_ny = $mm_y + (($mm_mh - $mm_h) / 2);
+                $this->Image($photoPath, $mm_nx, $mm_ny, $mm_w, $mm_h);
+
+                @unlink($photoPath);
+                if (file_exists($originalPhotoPath)) {
+                    @unlink($originalPhotoPath);
+                }
+            }
+        } catch (\Exception $ex) {
+            if (file_exists($photoPath)) {
+                @unlink($photoPath);
+            }
+            exit();
+        }
+    }
+
+    function getIcon(string|null $name, string|false $color = false, int $iconSize = 100): string
+    {
+        if (is_null($name)) {
+            return '';
+        }
+
+        if ($color === false)
+            $color = '#000000';
+        $color = strtolower(trim($color));
+        if (!preg_match('/^#[a-f0-9A-Z]{6}$/i', $color))
+            $color = '#000000';
+        if ($color === '#ffffff')
+            $color = '#fefefe';
+
+        $path = '../';
+        $name = trim(strtolower($name));
+        $pi = pathinfo($name);
+
+        $mtime = file_exists($path . $name) ? filemtime($path . $name) : time();
+
+        $pngname = $pi['filename'] . '.png';
+        $pngpath = './libs/toPdf/themes/icons/' . $color . '/';
+        if (!is_dir($pngpath))
+            mkdir($pngpath, 0777, true);
+        if (file_exists($pngpath . $pngname) && filemtime($pngpath . $pngname) === $mtime)
+            return $pngpath . $pngname;
+
+        if (file_exists($path . $name) && is_readable($path . $name) && $pi['extension'] === 'svg') {
+            $svg = file_get_contents($path . $name);
+
+            foreach ([3, 4, 8, 6] as $size) {
+                $svg = preg_replace("/([\s]+)width[\s]*=[\"'][\s]*(.+?)[\s]*[\"']/i", '$1width="1000"', $svg);
+                $svg = preg_replace("/([\s]+)height[\s]*=[\"'][\s]*(.+?)[\s]*[\"']/i", '$1height="1000"', $svg);
+
+                $colorPattern = "(#[0-9a-zA-Z]{{$size}})";
+                $svg = preg_replace("/\"(\s*){$colorPattern}(\s*)\"/i", "\"{$color}\"", $svg);
+                $svg = preg_replace('/\"(\s*)currentColor(\s*)\"/i', "\"{$color}\"", $svg);
+
+                foreach (['color', 'fill', 'stroke'] as $key) {
+                    $svg = preg_replace("/{$key}(\s*):(\s*){$colorPattern}(\s*)([;\"']+)/i", "{$key}:{$color}$5", $svg);
+                }
+            }
+
+            if (!$this->svg2png($svg, $pngpath . $pngname, $iconSize, $iconSize)) {
+                copy(__DIR__ . '/libs/toPdf/assets/blank.png', $pngpath . $pngname);
+            } else {
+                if (file_exists($pngpath . $name) && is_writable($pngpath . $name)) {
+                    @unlink($pngpath . $name);
+                }
+            }
+
+            touch($pngpath . $pngname, $mtime);
+
+            return $pngpath . $pngname;
+        }
+
+        return '';
+    }
+
+    function getSymbol(string $func, int $width = 100, int $height = 125): string
+    {
+        $name = "schema_{$func}.svg";
+        $path = '../';
+        $name = trim(strtolower($name));
+        $pi = pathinfo($name);
+        $mtime = file_exists($path . $name) ? filemtime($path . $name) : time();
+
+        $pngname = $pi['filename'] . '.png';
+        $pngpath = './libs/toPdf/themes/icons/symbols/';
+        if (!is_dir($pngpath))
+            mkdir($pngpath, 0777, true);
+        if (file_exists($pngpath . $pngname) && filemtime($pngpath . $pngname) === $mtime)
+            return $pngpath . $pngname;
+
+        if (file_exists($path . $name) && is_readable($path . $name) && $pi['extension'] === 'svg') {
+            $svg = file_get_contents($path . $name);
+            if (!$this->svg2png($svg, $pngpath . $pngname, $width, $height)) {
+                copy(__DIR__ . '/libs/toPdf/assets/blank.png', $pngpath . $pngname);
+            }
+            touch($pngpath . $pngname, $mtime);
+
+            return $pngpath . $pngname;
+        }
+
+        return '';
+    }
+
+    function getPoleSymbol(string $pole, int $width = 11, int $height = 17): string
+    {
+        $name = "schema_{$pole}.svg";
+        $path = '../';
+        $name = trim($name);
+        $pi = pathinfo($name);
+        $mtime = file_exists($path . $name) ? filemtime($path . $name) : time();
+
+        $pngname = $pi['filename'] . '.png';
+        $pngpath = './libs/toPdf/themes/icons/poles/';
+        if (!is_dir($pngpath))
+            mkdir($pngpath, 0777, true);
+        if (file_exists($pngpath . $pngname) && filemtime($pngpath . $pngname) === $mtime)
+            return $pngpath . $pngname;
+
+        if (file_exists($path . $name) && is_readable($path . $name) && $pi['extension'] === 'svg') {
+            $svg = file_get_contents($path . $name);
+            if (!$this->svg2png($svg, $pngpath . $pngname, $width, $height)) {
+                copy(__DIR__ . '/libs/toPdf/assets/blank.png', $pngpath . $pngname);
+            }
+            touch($pngpath . $pngname, $mtime);
+
+            return $pngpath . $pngname;
+        }
+
+        return '';
+    }
+
+    function Header()
+    {
+        global $switchboard, $tv, $printOptions;
+
+        $this->SetY(1.5);
+
+        if ($this->PageNo() > 1 || !$printOptions->firstPage) {
+            $this->SetTextColor(0, 0, 0);
+            $this->SetFont('Arial', 'B', 9);
+            $this->Cell(0, 10, str($switchboard->prjname . ' - rev ' . $switchboard->prjversion), 0, 0, 'R');
+        }
+
+        if ($this->PageNo() === 1 && $printOptions->firstPage) {
+            $this->SetTextColor(170, 170, 170);
+            $this->SetFont('Arial', '', 8);
+            $this->Cell(0, 10, str('tiquettes.fr ' . $tv . ' / php ' . phpversion() . ' / fpdf ' . FPDF::VERSION . ' / ' . $this->svg2pngConverter->GetCurrentConverter()['displayname']), 0, 0, 'R');
+        }
+
+        if ($this->subTitle !== "" && ($this->PageNo() > 1 || !$printOptions->firstPage)) {
+            $this->SetX($this->pageMargin);
+            $this->SetTextColor(0, 139, 139);
+            $this->SetFont('Arial', 'B', 11);
+            $this->Cell(0, 10, str($this->subTitle), 0, 0, 'L');
+        }
+
+        $this->SetDrawColor(0, 0, 0);
+        $this->SetLineWidth(0.1);
+        $this->Line($this->pageMargin, $this->pageMargin, $this->GetPageWidth() - $this->pageMargin, $this->pageMargin);
+
+        if (is_array($this->grid)) {
+            $this->SetDrawColor($this->gridColor[0], $this->gridColor[1], $this->gridColor[2]);
+            $step = $this->grid[$this->gridOrientation]['step'] ?? 5 > 0 ? intval($this->grid[$this->gridOrientation]['step']) : 5;
+            $originalX = $this->grid[$this->gridOrientation]['left'] ?? $this->pageMargin + 4;
+            $originalY = $this->grid[$this->gridOrientation]['top'] ?? $this->pageMargin + $step;
+            $x = $originalX;
+            while ($x < $this->GetPageWidth() - $originalX) {
+                $this->Line($x, $originalY, $x, $this->GetPageHeight() - $originalY);
+                $x += $step;
+            }
+            $this->grid[$this->gridOrientation]['bottom'] = $this->GetPageHeight() - $originalY;
+            $y = $originalY;
+            while ($y < $this->GetPageHeight() - $originalY) {
+                $this->Line($originalX, $y, $this->GetPageWidth() - $originalX, $y);
+                $y += $step;
+            }
+            $this->grid[$this->gridOrientation]['right'] = $this->GetPageWidth() - $originalX;
+        }
+
+        $this->Ln($this->pageMargin + 5);
+    }
+
+    function Footer()
+    {
+        global $tv, $printOptions;
+
+        if ($this->PageNo() > 1 || $printOptions->firstPage !== true) {
+            $this->SetY(-$this->pageBottomMargin);
+
+            $align = 'C';
+            $this->SetTextColor(50, 50, 50);
+            $this->SetFont('Arial', 'I', 8);
+            //$this->Cell(0, 10, str('Page ' . $this->PageNo() . '/{nb}'), 0, 0, 'C');
+            $this->Cell(0, 10, str('Page ' . $this->GroupPageNo() . '/' . $this->PageGroupAlias()), 0, 0, $align);
+            $this->SetDrawColor(0, 0, 0);
+            $this->SetLineWidth(0.1);
+            $this->Line($this->pageMargin, $this->GetPageHeight() - $this->pageMargin - 0.5, $this->GetPageWidth() - $this->pageMargin, $this->GetPageHeight() - $this->pageMargin - 0.5);
+
+            $this->SetTextColor(170, 170, 170);
+            $this->SetFont('Arial', '', 8);
+            $this->Cell(0, 10, str("tiquettes.fr {$tv}"), 0, 0, 'R');
+        }
+    }
+
+    function AddFirstPage()
+    {
+        global $switchboard, $printOptions, $tv;
+
+        $this->grid = false;
+        $this->StartPageGroup();
+        $this->AddPage('P', 'A4', 0);
+        $this->SetVisibility('all');
+
+        $this->SetDrawColor(100, 100, 100);
+        $this->SetTextColor(0, 0, 0);
+        $this->SetLineWidth(0.05);
+
+        // Titre
+        $this->SetY($this->pageMargin + 15);
+        $this->SetFont('Arial', 'B', 36);
+        $this->Cell(0, 10, str(_('Tableau électrique')), 0, 0, 'C');
+        // Cadre installateur
+        $this->SetY($this->pageMargin + 40);
+        $this->SetX($this->pageMargin);
+        $this->Line($this->GetX(), $this->GetY(), $this->GetPageWidth() - $this->GetX(), $this->GetY());
+        $this->Line($this->GetX(), $this->GetY() + 60, $this->GetPageWidth() - $this->GetX(), $this->GetY() + 60);
+        $this->Line($this->GetX(), $this->GetY(), $this->GetX(), $this->GetY() + 60);
+        $this->Line($this->GetPageWidth() - $this->GetX(), $this->GetY(), $this->GetPageWidth() - $this->GetX(), $this->GetY() + 60);
+        $this->SetY($this->pageMargin + 40);
+        $this->SetX($this->pageMargin + 2);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 10, str(_('Installateur')), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+        if (($printOptions->pdfOptions?->firstPageView?->from?->logo ?? false) === true) {
+            $logo = trim($switchboard?->firstPageInfos?->from?->logo ?? "");
+            if ($logo !== "") {
+                $left = $this->pageMargin + 2 + 7;
+                $top = $this->pageMargin + 40 + 2 + 11;
+                $sizeMax = 30;
+                $this->Photo($logo, $left, $top, $sizeMax, $sizeMax);
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->from?->siret ?? false) === true) {
+            $siret = trim($switchboard?->firstPageInfos?->from?->siret ?? "");
+            if ($siret !== "") {
+                $this->SetY($this->pageMargin + 40 + 50);
+                $this->SetX($this->pageMargin + 6);
+                $this->SetFont('Arial', '', 10);
+                $this->Cell(0, 10, str('S / ' . $siret), 0, 0, '');
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->from?->name ?? false) === true) {
+            $name = trim($switchboard?->firstPageInfos?->from?->name ?? "");
+            if ($name !== "") {
+                $this->SetY($this->pageMargin + 40 + 6);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', 'B', 16);
+                $this->Cell(0, 7, str($name), 0, 0, '');
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->from?->postalAddress ?? false) === true) {
+            $postalAddress = trim($switchboard?->firstPageInfos?->from?->postalAddress ?? "");
+            if ($postalAddress !== "") {
+                $this->SetY($this->pageMargin + 40 + 15);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', '', 12);
+                $this->MultiCell(0, 5, str($postalAddress), 0, 'L', false, 4);
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->from?->email ?? false) === true) {
+            $email = trim($switchboard?->firstPageInfos?->from?->email ?? "");
+            if ($email !== "") {
+                $this->SetY($this->pageMargin + 40 + 42);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', '', 12);
+                $this->Cell(0, 5, str(_('Email:')), 0, 0, '');
+                $this->SetY($this->pageMargin + 40 + 42);
+                $this->SetX($this->pageMargin + 65 + 30);
+                $this->SetFont('Arial', 'B', 12);
+                $this->Cell(0, 5, str($email), 0, 0, '');
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->from?->phone ?? false) === true) {
+            $phone = trim($switchboard?->firstPageInfos?->from?->phone ?? "");
+            if ($phone !== "") {
+                $this->SetY($this->pageMargin + 40 + 49);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', '', 12);
+                $this->Cell(0, 5, str(_('Téléphone:')), 0, 0, '');
+                $this->SetY($this->pageMargin + 40 + 49);
+                $this->SetX($this->pageMargin + 65 + 30);
+                $this->SetFont('Arial', 'B', 12);
+                $this->Cell(0, 5, str($phone), 0, 0, '');
+            }
+        }
+
+        // Cadre client
+        $this->SetY($this->pageMargin + 40 + 60 + 5);
+        $this->SetX($this->pageMargin);
+        $this->Line($this->GetX(), $this->GetY(), $this->GetPageWidth() - $this->GetX(), $this->GetY());
+        $this->Line($this->GetX(), $this->GetY() + 60, $this->GetPageWidth() - $this->GetX(), $this->GetY() + 60);
+        $this->Line($this->GetX(), $this->GetY(), $this->GetX(), $this->GetY() + 60);
+        $this->Line($this->GetPageWidth() - $this->GetX(), $this->GetY(), $this->GetPageWidth() - $this->GetX(), $this->GetY() + 60);
+        $this->SetY($this->pageMargin + 40 + 60 + 5);
+        $this->SetX($this->pageMargin + 2);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 10, str(_('Client')), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+
+        $left = $this->pageMargin + 2 + 7;
+        $top = $this->pageMargin + 40 + 60 + 5 + 11;
+        $sizeMax = 30;
+        $this->Photo('../android-chrome-192x192.png', $left, $top, $sizeMax, $sizeMax);
+
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 48);
+        $this->SetX($this->pageMargin + 8);
+        $this->SetFont('Arial', '', 10);
+        $this->Cell(0, 4, str(_('Dossier réalisé avec')), 0, 0, '');
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 52);
+        $this->SetX($this->pageMargin + 8);
+        $this->SetFont('Arial', 'B', 10);
+        $this->Cell(0, 4, str('Tiquettes.fr ' . $tv), 0, 0, '');
+        if (($printOptions->pdfOptions?->firstPageView?->to?->name ?? false) === true) {
+            $name = trim($switchboard?->firstPageInfos?->to?->name ?? "");
+            if ($name !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 6);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', 'B', 16);
+                $this->Cell(0, 7, str($name), 0, 0, '');
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->to?->postalAddress ?? false) === true) {
+            $postalAddress = trim($switchboard?->firstPageInfos?->to?->postalAddress ?? "");
+            if ($postalAddress !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 15);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', '', 12);
+                $this->MultiCell(0, 5, str($postalAddress), 0, 'L', false, 4);
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->to?->email ?? false) === true) {
+            $email = trim($switchboard?->firstPageInfos?->to?->email ?? "");
+            if ($email !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 42);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', '', 12);
+                $this->Cell(0, 5, str(_('Email:')), 0, 0, '');
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 42);
+                $this->SetX($this->pageMargin + 65 + 30);
+                $this->SetFont('Arial', 'B', 12);
+                $this->Cell(0, 5, str($email), 0, 0, '');
+            }
+        }
+        if (($printOptions->pdfOptions?->firstPageView?->to?->phone ?? false) === true) {
+            $phone = trim($switchboard?->firstPageInfos?->to?->phone ?? "");
+            if ($phone !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 49);
+                $this->SetX($this->pageMargin + 65);
+                $this->SetFont('Arial', '', 12);
+                $this->Cell(0, 5, str(_('Téléphone:')), 0, 0, '');
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 49);
+                $this->SetX($this->pageMargin + 65 + 30);
+                $this->SetFont('Arial', 'B', 12);
+                $this->Cell(0, 5, str($phone), 0, 0, '');
+            }
+        }
+
+        // Cadre projet
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5);
+        $this->SetX($this->pageMargin);
+        $this->Line($this->GetX(), $this->GetY(), $this->GetPageWidth() - $this->GetX(), $this->GetY());
+        $this->Line($this->GetX(), $this->GetY() + 100, $this->GetPageWidth() - $this->GetX(), $this->GetY() + 100);
+        $this->Line($this->GetX(), $this->GetY(), $this->GetX(), $this->GetY() + 100);
+        $this->Line($this->GetPageWidth() - $this->GetX(), $this->GetY(), $this->GetPageWidth() - $this->GetX(), $this->GetY() + 100);
+        $this->Line($this->GetX(), $this->GetY() + 35, $this->GetPageWidth() - $this->GetX(), $this->GetY() + 35);
+        $this->Line($this->GetX(), $this->GetY() + 46, $this->GetPageWidth() - $this->GetX(), $this->GetY() + 46);
+        $this->Line($this->GetX(), $this->GetY() + 56, $this->GetPageWidth() - $this->GetX(), $this->GetY() + 56);
+        $this->Line($this->GetX(), $this->GetY() + 66, $this->GetPageWidth() - $this->GetX(), $this->GetY() + 66);
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5);
+        $this->SetX($this->pageMargin + 2);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 10, str(_('Nom du projet')), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+        if (($printOptions->pdfOptions?->firstPageView?->projectName ?? false) === true) {
+            $prjname = trim($switchboard?->prjname ?? "");
+            if ($prjname !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 10);
+                $this->SetX($this->pageMargin + 8);
+                $this->SetFont('Arial', 'B', 12);
+                $this->MultiCell(0, 5, str($prjname), 0, 'L', false, 4);
+            }
+        }
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 39);
+        $this->SetX($this->pageMargin + 2);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 4, str(_('Révision')), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+        if (($printOptions->pdfOptions?->firstPageView?->projectVersion ?? false) === true) {
+            $prjversion = $switchboard?->prjversion ?? "";
+            if (!is_string($prjversion))
+                $prjversion = "{$prjversion}";
+            $prjversion = trim($prjversion);
+            if ($prjversion !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 38.5);
+                $this->SetX($this->pageMargin + 40);
+                $this->SetFont('Arial', 'B', 12);
+                $this->MultiCell(0, 5, str($prjversion), 0, 'L', false, 1);
+            }
+            $appversion = trim($switchboard?->appversion ?? "");
+            if ($appversion !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 39);
+                $this->SetX($this->pageMargin + 60);
+                $this->SetFont('Arial', '', 10);
+                $this->MultiCell(0, 4, str($appversion), 0, 'L', false, 1);
+            }
+        }
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 49);
+        $this->SetX($this->pageMargin + 2);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 4, str(_('Date de création')), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+        if (($printOptions->pdfOptions?->firstPageView?->projectCreated ?? false) === true) {
+            $prjcreated = trim($switchboard?->prjcreated ?? "");
+            if ($prjcreated !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 48.5);
+                $this->SetX($this->pageMargin + 40);
+                $this->SetFont('Arial', 'B', 12);
+                $this->MultiCell(0, 5, str(i18n_datetime($prjcreated, IntlDateFormatter::SHORT, IntlDateFormatter::NONE)), 0, 'L', false, 1);
+            }
+        }
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 49);
+        $this->SetX($this->pageMargin + 95);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 4, str(_('Dernière modification')), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+        if (($printOptions->pdfOptions?->firstPageView?->projectUpdated ?? false) === true) {
+            $prjupdated = trim($switchboard?->prjupdated ?? "");
+            if ($prjupdated !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 48.5);
+                $this->SetX($this->pageMargin + 140);
+                $this->SetFont('Arial', 'B', 12);
+                $this->MultiCell(0, 5, str(i18n_datetime($prjupdated, IntlDateFormatter::SHORT, IntlDateFormatter::NONE)), 0, 'L', false, 1);
+            }
+        }
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 59);
+        $this->SetX($this->pageMargin + 2);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 4, str(_("Type d'installation")), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+        if (($printOptions->pdfOptions?->firstPageView?->projectType ?? false) === true) {
+            $projectType = trim($switchboard?->projectType ?? "");
+            if ($projectType === 'R') {
+                $projectType = _('Résidentiel');
+            } else if ($projectType === 'T') {
+                $projectType = _('Tertiaire');
+            }
+            if ($projectType !== "") {
+                $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 58.5);
+                $this->SetX($this->pageMargin + 40);
+                $this->SetFont('Arial', 'B', 12);
+                $this->MultiCell(0, 5, str($projectType), 0, 'L', false, 1);
+            }
+        }
+        /*$this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 59);
+        $this->SetX($this->pageMargin + 95);*/
+
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 68);
+        $this->SetX($this->pageMargin + 2);
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 139, 139);
+        $this->Cell(0, 4, str(_("Ce dossier contient")), 0, 0, '');
+        $this->SetTextColor(0, 0, 0);
+
+        $squareIcon = $this->getIcon('square.svg', false, 32);
+        $squareCheckIcon = $this->getIcon('square-check.svg', false, 32);
+
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 78);
+        $this->SetX($this->pageMargin + 8 + 1);
+        $this->Image($printOptions->schema ? $squareCheckIcon : $squareIcon, $this->GetX(), $this->GetY(), 5, 5, 'PNG');
+
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 78 + 0.30);
+        $this->SetX($this->pageMargin + 8 + 7);
+        $this->SetFont('Arial', 'B', 12);
+        $this->MultiCell(0, 5, str(_('Schéma unifilaire')), 0, 'L', false, 1);
+
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 84);
+        $this->SetX($this->pageMargin + 8 + 1);
+        $this->Image($printOptions->summary ? $squareCheckIcon : $squareIcon, $this->GetX(), $this->GetY(), 5, 5, 'PNG');
+
+        $this->SetY($this->pageMargin + 40 + 60 + 5 + 60 + 5 + 84 + 0.30);
+        $this->SetX($this->pageMargin + 8 + 7);
+        $this->SetFont('Arial', 'B', 12);
+        $this->MultiCell(0, 5, str(_('Nomenclature')), 0, 'L', false, 1);
+
+        $this->SetFont('Arial', '', 8);
+        $this->SetTextColor(100, 100, 100);
+        $txt = _("Ce document est remis à titre indicatif et confidentiel. Toute reproduction est interdite.");
+        $x = ($this->GetPageWidth() / 2) - ($this->GetStringWidth($txt) / 2);
+        $y = $this->pageMargin + 40 + 60 + 5 + 60 + 5 + 100 + 7;
+        $this->Text($x, $y, str($txt));
+
+        // Alerte d'impression
+        $this->SetVisibility('screen');
+
+        $this->SetFont('Helvetica', 'B', 12);
+        $this->SetFillColor(255, 240, 240);
+        $this->SetTextColor(255, 50, 50);
+
+        $w = $this->GetPageWidth() - (2 * $this->pageMargin);
+        $this->SetX(($this->GetPageWidth() / 2) - ($w / 2));
+        $this->SetY(11);
+        $this->MultiCell($w, 5, str(_("ATTENTION: Imprimer ce document en 'Taille réelle' ou 'Echelle 100%'. Ne pas 'ajuster à la page' dans les paramètres d'impression.")), 0, 'L', true);
+
+        $w = $this->GetPageWidth() - (2 * $this->pageMargin);
+        $this->SetX(($this->GetPageWidth() / 2) - ($w / 2));
+        $this->SetY(41);
+        $this->MultiCell($w, 5, str(_("Cette alerte est visuelle et ne sera pas imprimée sur vos documents.")), 0, 'L', true);
+
+        $this->SetVisibility('all');
+
+
+
+        $this->SetDrawColor(0, 0, 0);
+    }
+
+    function drawCutLines(array &$cutLines): void
+    {
+        if ($this->showLabelsCutLines) {
+            foreach ($cutLines as $cutLine) {
+                $this->SetDrawColor(170, 170, 170);
+                $this->SetLineWidth(0.075);
+                $this->SetDash(1, 1);
+                $this->Line($cutLine[0], $cutLine[1], $cutLine[2], $cutLine[3]);
+                $this->Image('./libs/toPdf/assets/cut.png', $cutLine[0] + 1.5, $cutLine[1] - 1.25, 2.5, 2.5, 'PNG');
+            }
+            $this->SetDash();
+            $cutLines = [];
+        }
+    }
+
+    function AddLabelsPage()
+    {
+        try {
+
+            global $switchboard, $printOptions, $labelsPrintFormat;
+            $printCurrents = $printOptions->pdfOptions?->printCurrents ?? false;
+
+            require_once './libs/toPdf/themes/engine.php';
+            $h = $switchboard->height;
+            $w = $switchboard->stepSize;
+
+            $this->grid = false;
+            $rowsCount = count($switchboard->rows);
+            $modulesCount = $switchboard->stepsPerRows;
+            $this->subTitle = sprintf(ngettext("Etiquettes à découper: %d x %d module  /  largeur %s  /  hauteur %s", "Etiquettes à découper: %d x %d modules  /  largeur %s  /  hauteur %s", $modulesCount), $rowsCount, $modulesCount, i18n_size_mm($w, true), i18n_size_mm($h, true));
+            $this->StartPageGroup();
+            $this->AddPage('L', $labelsPrintFormat, 0);
+            $this->SetVisibility('all');
+
+            $cutLines = [];
+
+            $this->SetY($this->pageMargin + 3);
+
+            for ($i = 0; $i < count($switchboard->rows); $i++) {
+                $row = $switchboard->rows[$i];
+
+                $this->SetTextColor(170, 170, 170);
+                $this->SetFont('Arial', '', 10);
+                $this->Cell(0, 7, str(sprintf(_("Rangée %d"), $i + 1)), 0, 0, 'L');
+                $this->Ln(7);
+
+                $x = $this->pageMargin;
+
+                $modules = [];
+                for ($j = 0; $j < count($row); $j++) {
+                    $module = $row[$j];
+
+                    $isInvisible = str_contains(strtolower(trim($module->icon ?? "")), "invisible");
+                    if ($isInvisible) {
+                        $span = $module->span ?? 1;
+                        for ($z = 0; $z < $span; $z++) {
+                            $modules[] = (object)[
+                                ...(array)$module,
+                                "id" => "",
+                                "icon" => "",
+                                "text" => "",
+                                "free" => true,
+                                "half" => "none",
+                                "span" => 1,
+                                "func" => "",
+                                "current" => "",
+                                "type" => "",
+                                "crb" => "",
+                                "modtype" => "",
+                                "vref" => "230V",
+                                "sensibility" => "",
+                                "coef" => 0.5,
+                                "pole" => "",
+                                "wire" => "",
+                                "line" => "",
+                                "grp" => "",
+                            ];
+                        }
+                    } else {
+                        $modules[] = $module;
+                    }
+                }
+
+                for ($j = 0; $j < count($modules); $j++) {
+                    $module = $modules[$j];
+
+                    $half = ($module?->half ?? "");
+                    $span = intval($module?->span ?? '1', 10);
+                    if ($span < 0) $span = 1;
+
+                    $crb = ($module?->crb ?? "");
+                    $current = ($module?->current ?? "");
+                    $sensibility = ($module?->sensibility ?? "");
+                    $type = ($module?->type ?? "");
+
+                    if ($x + $w * $span > $this->GetPageWidth() - $this->pageMargin) {
+                        $this->SetY($this->GetY() + $h + ($printCurrents ? 11 : 3));
+                        $x = $this->pageMargin;
+                    }
+
+                    if ($this->GetY() + $h > $this->GetPageHeight() - ($this->pageBottomMargin)) {
+                        $this->drawCutLines($cutLines);
+                        $this->AddPage('L', $labelsPrintFormat, 0);
+                        $this->SetY($this->pageMargin + 10);
+                    }
+
+                    if ($x === $this->pageMargin) {
+                        $cutLines[] = [$this->pageMargin - 8, $this->GetY(), $this->GetPageWidth() - $this->pageMargin + 8, $this->GetY()];
+                        $cutLines[] = [$this->pageMargin - 8, $this->GetY() + $h, $this->GetPageWidth() - $this->pageMargin + 8, $this->GetY() + $h];
+                    }
+
+                    $box = [
+                        'x' => $x,
+                        'y' => $this->GetY(),
+                        'w' => $w * $span,
+                        'h' => $h,
+                    ];
+                    $workBox = [
+                        'x' => $half === 'left' ? $box['x'] + ($w / 2) : $box['x'],
+                        'y' => $box['y'],
+                        'w' => $half === 'left' || $half === 'right' ? $box['w'] - ($w / 2) : $box['w'],
+                        'h' => $box['h'],
+                    ];
+                    $restPos = [
+                        'x' => $printOptions->freeModules === true ? ($half === 'left' ?  ($box['x'] - $workBox['x']) : 0) : 0,
+                        'w' => $printOptions->freeModules === true ? ($box['w'] - $workBox['w']) : 0,
+                    ];
+
+                    Theme::render($this, $workBox, $restPos, $switchboard->theme->data, $module, $printOptions);
+
+                    $this->SetDrawColor(170, 170, 170);
+                    $this->SetLineWidth(0.1);
+                    $this->Rect($box['x'], $box['y'], $box['w'], $box['h'], 'D');
+                    $this->Line($workBox['x'], $workBox['y'], $workBox['x'], $workBox['y'] + $workBox['h']);
+                    $this->Line($workBox['x'] + $workBox['w'], $workBox['y'], $workBox['x'] + $workBox['w'], $workBox['y'] + $workBox['h']);
+
+                    if ($printCurrents) {
+                        $ox = $this->GetX();
+                        $oy = $this->GetY();
+
+                        $this->SetXY($box['x'], $box['y'] + $box['h']);
+
+                        $this->SetTextColor(150, 150, 150);
+                        $this->SetDrawColor(220, 220, 220);
+                        $this->SetFillColor(252, 252, 252);
+
+                        $this->Rect($box['x'], $box['y'] + $box['h'], $box['w'], 6, 'DF');
+
+                        $this->SetFont('Helvetica', '', 7);
+                        $txt = mb_convert_encoding(trim($crb . $current . " " . $sensibility . " " . $type), 'windows-1252', 'UTF-8');
+                        $this->MultiCell($box['w'], 6, $txt, 0, 'C', false, 1);
+
+                        $this->SetXY($ox, $oy);
+                    }
+
+                    $x += $w * $span;
+                }
+
+                $this->SetY($this->GetY() + $h + ($printCurrents ? 10 : 6));
+            }
+
+            $this->drawCutLines($cutLines);
+        } catch (\Exception $e) {
+            die();
+        }
+    }
+
+    function AddSchemaPage()
+    {
+        global $switchboard;
+
+        $this->SetVisibility('all');
+        $this->StartPageGroup();
+
+        if (count($switchboard->sources ?? []) > 0) {
+            $this->drawSourcesList();
+        }
+
+        $this->drawSchemaPage();
+    }
+
+    protected function drawSourcesList(): void
+    {
+        global $switchboard, $schemaPrintFormat;
+
+        $sources = $switchboard->sources ?? [];
+        if (count($sources) === 0) return;
+
+        $this->grid = false;
+        $gridOrientation = 'L';
+
+        $rows = [
+            ['title' => _("Modèle"), 'property' => 'name', 'sprintf' => '%s', 'lines' => 1, 'fontweight' => '', 'color' => [100, 100, 100]],
+            ['title' => _("Nom"), 'property' => 'label', 'sprintf' => '%s', 'lines' => 1, 'fontweight' => 'B', 'color' => [0, 0, 0]],
+            ['title' => _("Description"), 'property' => 'description', 'sprintf' => '%s', 'lines' => 3,  'fontweight' => '', 'color' => [100, 100, 100]],
+            null,
+            ['title' => _("Type"), 'property' => 'type', 'sprintf' => '%s', 'lines' => 1, 'fontweight' => '', 'color' => [0, 0, 0]],
+            ['title' => _("Sensibilité"), 'property' => 'sensibility', 'sprintf' => '%s', 'lines' => 1, 'fontweight' => '', 'color' => [0, 0, 0]],
+            ['title' => _("Courbe"), 'property' => 'crb', 'sprintf' => '%s', 'lines' => 1, 'fontweight' => '', 'color' => [0, 0, 0]],
+            ['title' => _("Calibre"), 'property' => 'current', 'sprintf' => '%s', 'lines' => 1,  'fontweight' => '', 'color' => [0, 0, 0]],
+            ['title' => _("Pôles"), 'property' => 'pole', 'sprintf' => '%s', 'lines' => 1,  'fontweight' => '', 'color' => [0, 0, 0]],
+            ['title' => _("Section"), 'property' => 'wire', 'sprintf' => '%dmm²', 'lines' => 1,  'fontweight' => '', 'color' => [0, 0, 0]],
+            null,
+            ['title' => _("Remarques"), 'property' => 'remark', 'sprintf' => '%s', 'lines' => 11, 'fontsize' => 9, 'fontweight' => '', 'color' => [0, 0, 0]],
+        ];
+
+        $initialPos = [
+            'x' => $this->pageMargin + 1,
+            'y' => $this->pageMargin + 2.5 + 5
+        ];
+        $pos = $initialPos;
+
+        $fontsize = 9;
+        $lineHeight = $fontsize;
+        $stringheight = $fontsize / 2;
+        $columnWidth = 54;
+        $separatorWidth = 1;
+
+        $newPage = function () use ($gridOrientation, $schemaPrintFormat, $initialPos, $rows, $lineHeight, $stringheight, $columnWidth, $fontsize, $separatorWidth) {
+            global $pos;
+
+            $this->subTitle = _("Schéma unifilaire - Liste des sources");
+            $this->AddPage($gridOrientation, $schemaPrintFormat, 0);
+
+            $pos = $initialPos;
+
+            foreach ($rows as $row) {
+                if (is_null($row)) {
+                    $pos['y'] += $lineHeight;
+                    continue;
+                }
+
+                $boxheight = $row['lines'] === 1 ? $lineHeight : (($stringheight * $row['lines']) + 5);
+
+                $this->SetFillColor(240, 240, 240);
+                $this->Rect($pos['x'], $pos['y'], $columnWidth, $boxheight, 'F');
+
+                $this->SetY($pos['y'] + 2.5);
+                $this->SetX($pos['x'] + 4);
+                $this->SetFont('Arial', 'B', $fontsize);
+                $this->SetTextColor(0, 0, 0);
+                $this->MultiCell($columnWidth - 10, $stringheight, str($row['title']), 0, 'L', false, 1);
+
+                $pos['y'] += $boxheight + $separatorWidth;
+            }
+        };
+
+        $newPage();
+        foreach ($sources as $source) {
+            if ($pos['x'] + $columnWidth > $this->GetPageWidth() - ($initialPos['x'] * 2)) {
+                $newPage();
+                $pos = $initialPos;
+            }
+
+            $pos['y'] = $initialPos['y'];
+            $pos['x'] += $columnWidth + $separatorWidth;
+
+            foreach ($rows as $row) {
+                if (is_null($row)) {
+                    $pos['y'] += $lineHeight;
+                    continue;
+                }
+
+                $boxheight = $row['lines'] === 1 ? $lineHeight : (($stringheight * $row['lines']) + 5);
+
+                $this->SetFillColor(224, 255, 255);
+                $this->Rect($pos['x'], $pos['y'], $columnWidth, $boxheight, 'F');
+
+                $this->SetY($pos['y'] + 2.5);
+                $this->SetX($pos['x'] + 4);
+                $this->SetFont('Arial', $row['fontweight'], $fontsize);
+                $this->SetTextColor(...$row['color']);
+
+                $property = $row['property'];
+                $text = trim((string)($source->$property ?? ''));
+                if ($text === '') {
+                    $text = '-';
+                    $row['lines'] = 1;
+                } else {
+                    $text = sprintf($row['sprintf'], $text);
+                }
+
+                $this->MultiCell($columnWidth - 10, $stringheight, str($text), 0, 'L', false, $row['lines']);
+
+                $pos['y'] += $boxheight + $separatorWidth;
+            }
+        }
+    }
+
+    protected function drawSchemaPage(): void
+    {
+        global $schemaPrintFormat, $schemaFolioStart;
+
+        $this->grid = [
+            'P' => [
+                'schemaMaxLevels' => 11,
+                'step' => 5,
+                'left' => $this->pageMargin,
+                'top' => $this->pageMargin + 3.5
+            ],
+            'L' => [
+                'schemaMaxLevels' => 6,
+                'step' => 5,
+                'left' => $this->pageMargin + 1,
+                'top' => $this->pageMargin + 2.5
+            ]
+        ];
+
+        if ($this->gridOrientation !== 'P' && $this->schemaLevelsCount > $this->grid[$this->gridOrientation]['schemaMaxLevels']) {
+            $this->gridOrientation = 'P';
+        }
+
+        $this->schemaInitialPos = [
+            'x' => $this->grid[$this->gridOrientation]['left'] + $this->grid[$this->gridOrientation]['step'],
+            'y' => $this->grid[$this->gridOrientation]['top'] + $this->grid[$this->gridOrientation]['step'],
+        ];
+
+        $this->schemaCurrentFolio = $schemaFolioStart;
+        $this->subTitle = sprintf(_("Schéma unifilaire - Folio %d"), $this->schemaCurrentFolio);
+        $this->AddPage($this->gridOrientation, $schemaPrintFormat, 0);
+        $this->drawGroundLine();
+        $this->schemaCurrentPosX = $this->schemaInitialPos['x'];
+        $this->schemaDrawChilds('', 0);
+    }
+
+    protected function getDirectChildsCount(mixed $pm): int
+    {
+        global $flattenModules;
+
+        if (is_null($pm))
+            return 0;
+
+        $childs = array_values(array_filter($flattenModules, fn($m) => $m->parentId === $pm->id));
+        return count($childs);
+    }
+
+    protected function getSiblingCount(mixed $pm): int
+    {
+        global $flattenModules;
+
+        if (is_null($pm))
+            return 0;
+
+        $childs = array_values(array_filter($flattenModules, fn($m) => $m->parentId === $pm->parentId));
+        return count($childs);
+    }
+
+    protected function schemaLevelsCounterRecursive(string $id = '', int $level = 1)
+    {
+        global $flattenModules;
+
+        $found = array_values(array_filter($flattenModules, fn($m) => $m->parentId === $id));
+        if (count($found) > 0) {
+            if ($level > $this->schemaLevelsCount)
+                $this->schemaLevelsCount = $level;
+
+            foreach ($found as $m)
+                $this->schemaLevelsCounterRecursive($m->id, $level + 1);
+        }
+    }
+
+    protected function drawGroundLine()
+    {
+        global $switchboard;
+
+        if ($switchboard->withGroundLine) {
+            $gridPosY = 30;
+
+            //$this->SetDash(1, 1);
+            $this->SetLineWidth($this->schemaLineWidth);
+            $this->SetDrawColor(100, 100, 100);
+            $this->Line($this->grid[$this->gridOrientation]['left'], $this->grid[$this->gridOrientation]['bottom'] - $gridPosY, $this->grid[$this->gridOrientation]['right'], $this->grid[$this->gridOrientation]['bottom'] - $gridPosY);
+            $this->SetDash();
+
+            $this->Line($this->grid[$this->gridOrientation]['right'] - 2.5, $this->grid[$this->gridOrientation]['bottom'] - $gridPosY - 2.5, $this->grid[$this->gridOrientation]['right'] - 2.5, $this->grid[$this->gridOrientation]['bottom'] - $gridPosY + 2.5);
+            $this->Line($this->grid[$this->gridOrientation]['right'] - 1.5, $this->grid[$this->gridOrientation]['bottom'] - $gridPosY - 1.5, $this->grid[$this->gridOrientation]['right'] - 1.5, $this->grid[$this->gridOrientation]['bottom'] - $gridPosY + 1.5);
+            $this->Line($this->grid[$this->gridOrientation]['right'] - 0.5, $this->grid[$this->gridOrientation]['bottom'] - $gridPosY - 0.5, $this->grid[$this->gridOrientation]['right'] - 0.5, $this->grid[$this->gridOrientation]['bottom'] - $gridPosY + 0.5);
+            $this->SetLineWidth(0.2);
+        }
+    }
+
+    protected function drawPowerLine(object|null $m, int $level, int $pos): void
+    {
+        global $switchboard;
+
+        if (is_null($m) /*|| $pos > 0*/)
+            return;
+
+        if (trim($m->parentId ?? '') === '') {
+            $lx = $this->grid[$this->gridOrientation]['left'];
+            $ly = ($level > 0
+                ? $this->schemaLastPos["L{$level}"]['y'] - ($this->schemaLineWidth / 2)
+                : $this->schemaInitialPos['y'] - ($this->schemaLineWidth / 2) - 0.125);
+            $lw = $this->schemaCurrentPosX - $lx + ($this->schemaSymbolSize['w'] / 2) + ($this->schemaLineWidth / 2);
+            $this->SetFillColor($this->schemaLineColor[0], $this->schemaLineColor[1], $this->schemaLineColor[2]);
+            $this->Rect($lx, $ly, $lw, $this->schemaLineWidth, 'F');
+
+            $this->SetDrawColor($this->schemaLineColor[0], $this->schemaLineColor[1], $this->schemaLineColor[2]);
+            $lxDelta = 0.1;
+            $lyDelta = 0.1;
+            $polygonSize = 2.5;
+            $this->Polygon([
+                $lx + $lxDelta,
+                $ly + $lyDelta,
+                $lx + ($polygonSize / 2) + $lxDelta,
+                $ly - ($polygonSize / 2) + $lyDelta,
+                $lx + $polygonSize + $lxDelta,
+                $ly + $lyDelta
+            ], 'D');
+
+            $this->SetTextColor($this->schemaLineColor[0], $this->schemaLineColor[1], $this->schemaLineColor[2]);
+            $this->SetFont('Arial', 'B', 6.5);
+            $src = $m->srcId ? array_values(array_filter(($switchboard->sources ?? []), fn($fm) => is_object($fm) && $fm->id === $m->srcId)) : null;
+            $t = $src ? array_values($src)[0]->label : "";
+            $t = substr($t, 0, 50);
+            $fs = str($t);
+            $this->Text($lx + 2.5, $ly - 1.5, $fs);
+        }
+    }
+
+    protected function drawPreviousLine(bool $fm, bool $isNew, int $pos, int $level): void
+    {
+        if (!$fm && $pos > 0 && in_array("L{$level}", array_keys($this->schemaLastPos)) && $this->schemaLastPos["L{$level}"]['x'] && $this->schemaLastPos["L{$level}"]['y']) {
+            $lx = $isNew || $this->schemaCurrentPosX < $this->schemaLastPos["L{$level}"]['x']
+                ? $this->grid[$this->gridOrientation]['left']
+                : $this->schemaLastPos["L{$level}"]['x'] + ($this->schemaSymbolSize['w'] / 2);
+            $ly = $this->schemaLastPos["L{$level}"]['y'] - ($this->schemaLineWidth / 2);
+            $lw = $this->schemaCurrentPosX - $lx + ($this->schemaSymbolSize['w'] / 2) + ($this->schemaLineWidth / 2);
+            $this->SetFillColor($this->schemaLineColor[0], $this->schemaLineColor[1], $this->schemaLineColor[2]);
+            $this->Rect($lx, $ly, $lw, $this->schemaLineWidth, 'F');
+
+            if ($isNew || $this->schemaCurrentPosX < $this->schemaLastPos["L{$level}"]['x']) {
+                $ly += ($this->schemaLineWidth / 2);
+                $this->Polygon([
+                    $lx,
+                    $ly,
+                    $lx + 1.5,
+                    $ly - 1.5,
+                    $lx + 1.5,
+                    $ly + 1.5
+                ], 'F');
+
+                $this->SetFont('Arial', '', 5);
+                $folio = $this->schemaCurrentFolio - 1;
+                $fs = str(sprintf(_("Folio %d"), $folio));
+                $this->Text($lx + 2.5, $ly - 1, $fs);
+            }
+        }
+    }
+
+    protected function drawNextLine(object|null $m, int $l): void
+    {
+        global $flattenModules;
+
+        $gsc = $this->getSiblingCount($m);
+        if ($m->parentId !== '' && !is_null($m) && $gsc > 1) {
+            // $this->schemaLastPos["L{$l}"]['index']
+            // $this->schemaLastPos["L{$l}"]['total']
+            // $this->schemaLastPos["L{$l}"]['islast']
+            if (!$this->schemaLastPos["L{$l}"]['islast']) {
+                $lx = $this->schemaLastPos["L{$l}"]['x'] + ($this->schemaSymbolSize['w'] / 2);
+                $ly = $this->schemaInitialPos['y'] + ($this->schemaSymbolSize['h'] * $l) - ($this->schemaLineWidth / 2) - 0.125;
+                $lw = $this->grid[$this->gridOrientation]['right'] - $lx;
+                $this->SetFillColor($this->schemaLineColor[0], $this->schemaLineColor[1], $this->schemaLineColor[2]);
+                $this->Rect($lx, $ly, $lw, $this->schemaLineWidth, 'F');
+
+                $lx = $this->grid[$this->gridOrientation]['right'];
+                $ly += ($this->schemaLineWidth / 2);
+                $this->Polygon([
+                    $lx,
+                    $ly,
+                    $lx - 1.5,
+                    $ly - 1.5,
+                    $lx - 1.5,
+                    $ly + 1.5
+                ], 'F');
+
+                $this->SetFont('Arial', '', 5);
+                $folio = $this->schemaCurrentFolio + 1;
+                $fs = str(sprintf(_("Folio %d"), $folio));
+                $this->Text($lx - $this->GetStringWidth($fs) - 2.5, $ly - 1, $fs);
+
+                $pms = array_values(array_filter($flattenModules, fn($pm) => $m->parentId === $pm->id));
+                $pl = $l - 1;
+                if (count($pms) > 0 && $pl >= 0) {
+                    $pm = $pms[0];
+                    if ($this->getSiblingCount($pm) > 0) {
+                        $this->drawNextLine($pm, $pl);
+                    }
+                };
+            }
+        }
+    }
+
+    protected function schemaDrawItem(int $pos, object|null $lastModule, object $module, int $level, int $index, int $total): void
+    {
+        global $schemaPrintFormat, $schemaFunctions;
+
+        if ($module->func !== 'k') {
+            $sf = $schemaFunctions[$module->func];
+        } else {
+            $sf = ['hasType' => false, 'hasCrb' => false, 'hasCurrent' => true];
+        }
+
+        $isNew = (($this->schemaCurrentPosX + $this->schemaSymbolSize['w']) > $this->grid[$this->gridOrientation]['right']) || ($lastModule !== null && $module->parentId === '');
+        $currentPosY = $this->schemaInitialPos['y'] + ($this->schemaSymbolSize['h'] * $level) - 0.125;
+        $directChildsCount = $this->getDirectChildsCount($module);
+
+        if ($isNew) {
+            $this->drawNextLine($lastModule, $level);
+
+            $this->schemaCurrentFolio++;
+            $this->subTitle = sprintf(_("Schéma unifilaire - Folio %d"), $this->schemaCurrentFolio);
+            $this->AddPage($this->gridOrientation, $schemaPrintFormat, 0);
+            $this->drawGroundLine();
+            $this->schemaCurrentPosX = $this->schemaInitialPos['x'];
+        }
+
+        $centerX = $this->schemaCurrentPosX + ($this->schemaSymbolSize['w'] / 2);
+
+        if ($level < $this->grid[$this->gridOrientation]['schemaMaxLevels']) {
+            $sff = $module->func;
+            if ($module->func === 'k' && ($schemaFunctions['kc']['hasNONCChoice'] === true || $schemaFunctions['tl']['hasNONCChoice'] === true) && strtoupper(trim($module->kcType ?? "")) === 'NC') {
+                $sff .= '_nc';
+            }
+            $symbol = $this->getSymbol($sff);
+            if ($symbol !== '')
+                $this->Image($symbol, $this->schemaCurrentPosX + 0.04, $currentPosY, $this->schemaSymbolSize['w'], $this->schemaSymbolSize['h'], 'PNG');
+
+            $this->SetTextColor(0, 0, 0);
+            $this->SetFont('Arial', 'B', 7);
+            $this->Text($centerX + ($this->grid[$this->gridOrientation]['step'] / 2), $currentPosY + ($this->grid[$this->gridOrientation]['step'] / 2) + 2, str($module->id));
+            $this->SetFont('Arial', '', 6);
+
+            $lines = [
+                $sf['hasType'] && $module->type ? str(sprintf(_("Type %s"), $module->type) ?? '') : '',
+                $sf['hasType'] && $module->type ? str($module->sensibility ?? '') : '',
+                str(trim(($sf['hasCrb'] && $module->crb ? ($module->crb ?? '') : '') . ' ' . ($sf['hasCurrent'] && $module->current ? ($module->current ?? '') : ''))),
+                str($module->pole ?? '')
+            ];
+            for ($i = 0; $i < count($lines); $i++) {
+                $this->Text($centerX + ($this->grid[$this->gridOrientation]['step'] / 2), $currentPosY + ($this->grid[$this->gridOrientation]['step'] / 2) + 2 + (($i + 1) * ($this->grid[$this->gridOrientation]['step'] / 2)), $lines[$i]);
+            }
+
+            /*if (isset($module->pole) && is_string($module->pole)) {
+                $pole = $this->getPoleSymbol($module->pole);
+                if ($pole !== '') $this->Image($pole, $centerX - (2.9104166667 / 2), $currentPosY + $this->schemaSymbolSize['h'] - 5, 2.9104166667, 0, 'PNG');
+            }*/
+
+            if (isset($module->line) && is_string($module->line) && trim($module->line) !== "") {
+                $this->SetTextColor(0, 0, 0);
+                $this->SetFont('Arial', '', 5.5);
+                $this->TextWithDirection($centerX - 1, $currentPosY + ($this->grid[$this->gridOrientation]['step'] / 2) + 1, str("L" . $module->line), 'U');
+            }
+        } else {
+            $symbol = $this->getSymbol('blank');
+            if ($symbol !== '')
+                $this->Image($symbol, $this->schemaCurrentPosX, $currentPosY, $this->schemaSymbolSize['w'], $this->schemaSymbolSize['h'], 'PNG');
+        }
+
+        if ($directChildsCount === 0) {
+            //$this->SetFillColor(100, 100, 100);
+            //$this->Rect($centerX - ($this->schemaLineWidth / 2), $currentPosY + $this->schemaSymbolSize['h'], $this->schemaLineWidth, $this->grid[$this->gridOrientation]['bottom'] - ($currentPosY + $this->schemaSymbolSize['h']) - 20, 'F');
+
+            $plusTop = is_array($this->grid) ? $this->grid[$this->gridOrientation]['step'] : 0;
+
+            $this->SetDrawColor(125, 125, 125);
+            $this->SetDash(1, 1);
+            $this->Line(($centerX - ($this->schemaLineWidth / 2)) + ($this->schemaLineWidth / 2), $currentPosY + $this->schemaSymbolSize['h'] + $plusTop, ($centerX - ($this->schemaLineWidth / 2)) + ($this->schemaLineWidth / 2), $this->grid[$this->gridOrientation]['bottom'] - 20 - $plusTop);
+            $this->SetDash();
+            //$this->Circle(($centerX - ($this->schemaLineWidth / 2)) + ($this->schemaLineWidth / 2), $currentPosY + $this->schemaSymbolSize['h'] + $plusTop, 0.75, 'D');
+            $this->Line((($centerX - ($this->schemaLineWidth / 2)) + ($this->schemaLineWidth / 2)) - 2, $currentPosY + $this->schemaSymbolSize['h'] + $plusTop, (($centerX - ($this->schemaLineWidth / 2)) + ($this->schemaLineWidth / 2)) + 2, $currentPosY + $this->schemaSymbolSize['h'] + $plusTop);
+
+            $this->SetFillColor($this->schemaLineColor[0], $this->schemaLineColor[1], $this->schemaLineColor[2]);
+
+            if (isset($module->pole) && is_string($module->pole)) {
+                $pole = $this->getPoleSymbol($module->pole);
+                if ($pole !== '')
+                    $this->Image($pole, $centerX - (2.9104166667 / 2), $this->grid[$this->gridOrientation]['bottom'] - 25, 2.9104166667, 0, 'PNG');
+            }
+
+            if (isset($module->wire) && is_string($module->wire) && trim($module->wire) !== "" && trim($module->wire) !== "?") {
+                $this->SetTextColor(0, 0, 0);
+                $this->SetFont('Arial', '', 5.5);
+                $this->TextWithDirection($centerX - 2.5, $this->grid[$this->gridOrientation]['bottom'] - 20.5, str($module->wire . " mm²"), 'U');
+            }
+
+            /*$this->SetFillColor(200, 200, 200);
+            $this->Rect($centerX - ($this->schemaSymbolSize['w'] / 2), $this->grid[$this->gridOrientation]['bottom'] - 20, $this->schemaSymbolSize['w'], 0.1, 'F');*/
+
+            if (isset($module->icon) && is_string($module->icon)) {
+                $icon = $this->getIcon($module->icon, '#000000', 100);
+                if ($icon !== '')
+                    $this->Image($icon, $centerX - (5.5 / 2), $this->grid[$this->gridOrientation]['bottom'] - 18, 5.5, 5.5, 'PNG');
+            }
+
+            if (isset($module->text) && is_string($module->text) && trim($module->text) !== "") {
+                $this->SetTextColor(0, 0, 0);
+                $this->SetFont('Arial', '', 7);
+                $oldX = $this->GetX();
+                $oldY = $this->GetY();
+                $this->SetXY($centerX - ($this->schemaSymbolSize['w'] / 2), $this->grid[$this->gridOrientation]['bottom'] - 11);
+                $this->MultiCell($this->schemaSymbolSize['w'], 2.5, str($module->text), 0, 'C', false, 4);
+                $this->SetXY($oldX, $oldY);
+            }
+        }
+
+        $this->drawPreviousLine(($lastModule !== null && $module->parentId === ''), $isNew, $pos, $level);
+        $this->drawPowerLine($module, $level, $pos);
+
+        $this->schemaLastPos["L{$level}"] = [
+            'x' => $this->schemaCurrentPosX,
+            'y' => $currentPosY,
+            'index' => $index,
+            'total' => $total,
+            'islast' => $index >= $total
+        ];
+    }
+
+    protected function schemaDrawChilds(string $parentId, int $level): void
+    {
+        global $flattenModules;
+
+        $found = array_values(array_filter($flattenModules, function ($m) use ($parentId) {
+            return $m->parentId === $parentId;
+        }));
+        if (count($found) === 0)
+            return;
+
+        $total = count($found);
+        for ($i = 0; $i < $total; $i++) {
+            $module = $found[$i];
+            $lastModule = $i > 0 ? $found[$i - 1] : null;
+            $this->schemaDrawItem($i, $lastModule, $module, $level, $i + 1, $total);
+            $this->schemaDrawChilds($module->id, $level + 1);
+
+            if ($i < count($found) - 1)
+                $this->schemaCurrentPosX += $this->schemaSymbolSize['w'] - 0.125;
+        }
+    }
+
+    function AddSummaryPage()
+    {
+        global $switchboard, $printOptions, $summaryPrintFormat, $schemaFunctions;
+
+        $this->grid = false;
+        $this->subTitle = _("Nomenclature");
+        $this->StartPageGroup();
+        $this->AddPage('L', $summaryPrintFormat, 0);
+        $this->SetVisibility('all');
+
+        $this->SetY($this->pageMargin + 3);
+        $this->SetFont('Arial', 'B', 11);
+        $this->SetTextColor(0, 0, 0);
+        $oldPosX = $this->pageMargin;
+        $columns = [
+            ['id' => 'row', 'text' => _('Rangée'), 'w' => 28, 'align' => 'L'],
+            ['id' => 'column', 'text' => _('Position'), 'w' => 17, 'align' => 'L'],
+            ['id' => 'type', 'text' => _('Type'), 'w' => 15, 'align' => 'C'],
+            ['id' => 'identifiant', 'text' => _('Id'), 'w' => 20, 'align' => 'L'],
+            ['id' => 'function', 'text' => _('Fonction'), 'w' => 53, 'align' => 'L'],
+            ['id' => 'label', 'text' => _('Libellé'), 'w' => 70, 'align' => 'L'],
+            ['id' => 'description', 'text' => _('Annotations'), 'w' => 74, 'align' => 'L'],
+        ];
+        foreach ($columns as $column) {
+            $this->SetX($oldPosX);
+            $this->Cell($column['w'], 7, str($column['text']), 0, 0, $column['align']);
+            $oldPosX += $column['w'];
+        }
+        $this->Ln(12);
+
+        for ($i = 0; $i < count($switchboard->rows); $i++) {
+            $oldPosX = $this->pageMargin;
+
+            $rowPosition = $i + 1;
+            $rowPositionText = str_pad("{$rowPosition}", strlen(strval(count($switchboard->rows))), '0', STR_PAD_LEFT);
+
+            $this->SetFont('Arial', '', 10);
+            $this->SetTextColor(0, 0, 0);
+            $this->SetX($oldPosX + 5);
+            $this->Cell($columns[0]['w'], 8, str(sprintf(_("Rangée %d"), $rowPositionText)), 0, 0, $columns[0]['align']);
+            $this->SetX($oldPosX);
+            $this->Image('./libs/toPdf/assets/summary_row.png', $oldPosX, $this->GetY() + 1.9, 4, 4, 'PNG');
+
+
+            $rowIsEmpty = true;
+            for ($j = 0; $j < count($switchboard->rows[$i]); $j++) {
+                $this->SetFont('Arial', '', 10);
+
+                $oldPosX = $this->pageMargin + $columns[0]['w'];
+                $columnPosition = $j + 1;
+                $columnPositionText = str_pad("{$columnPosition}", strlen(strval(count($switchboard->rows[$i]))), '0', STR_PAD_LEFT);
+
+                $module = $switchboard->rows[$i][$j];
+                if (!$module->free && ($module->func ?? '') !== '') {
+                    if ($rowIsEmpty)
+                        $rowIsEmpty = false;
+
+                    if ($module->func === 'k')
+                        $module->func = 'kc';
+
+                    if ($j === 0) {
+                        $this->SetFillColor(220, 220, 220);
+                        $this->Rect($this->pageMargin, $this->GetY() - 2.5, $this->GetPageWidth() - $this->pageMargin - $this->pageMargin, 0.5, 'F');
+                    } else {
+                        $this->SetDrawColor(220, 220, 220);
+                        $this->Line($this->pageMargin, $this->GetY() - 2.5, $this->GetPageWidth() - $this->pageMargin, $this->GetY() - 2.5);
+                    }
+
+                    $maxheight = 0;
+
+                    $this->SetFont('Arial', '', 10);
+                    $this->SetX($oldPosX + 5);
+                    $this->Cell($columns[1]['w'], 8, str(sprintf(_("P%s"), $columnPositionText)), 0, 0, $columns[1]['align']);
+                    $this->SetX($oldPosX);
+                    $this->Image('./libs/toPdf/assets/summary_position.png', $oldPosX, $this->GetY() + 1.9, 4, 4, 'PNG');
+                    $oldPosX += $columns[1]['w'];
+
+                    if ($this->GetY() > $maxheight)
+                        $maxheight = $this->GetY();
+
+                    if ($module->icon) {
+                        $icon = $this->getIcon($module->icon, '#000000', 100);
+                        if ($icon !== '')
+                            $this->Image($icon, $oldPosX + (($columns[2]['w'] / 2) - (5.5 / 2)), $this->GetY() + 1, 5.5, 5.5, 'PNG');
+                    }
+                    $oldPosX += $columns[2]['w'];
+
+                    if ($this->GetY() > $maxheight)
+                        $maxheight = $this->GetY();
+
+                    $this->SetFont('Arial', 'B', 10);
+                    $this->SetX($oldPosX);
+                    $this->Cell($columns[3]['w'], 8, str($module->id), 0, 0, $columns[3]['align']);
+                    $oldPosX += $columns[3]['w'];
+
+                    if ($this->GetY() > $maxheight)
+                        $maxheight = $this->GetY();
+
+                    $oldPosY = $this->GetY();
+                    $this->SetFont('Arial', '', 9);
+                    $this->SetX($oldPosX);
+                    $fname = _(array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['name'] ?? '-') : '-');
+                    $ftype = array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['hasType'] ? sprintf(_('Type %s'), trim($module->type)) : '') : '-';
+                    $fcrb = array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['hasCrb'] && trim($module->crb) !== "" ? sprintf(_('Courbe %s'), trim($module->crb)) : '') : '-';
+                    $fsensibility = array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['hasType'] ? $module->sensibility : '') : '-';
+                    $fcurrent = trim($module->current ?? "");
+                    $fpole = trim($module->pole ?? '');
+                    $fdetails = trim($ftype . ' ' . $fcrb . ' ' . $fsensibility . ' ' . $fcurrent . ' ' . $fpole);
+                    if ($fdetails !== '')
+                        $fdetails = "\n" . $fdetails;
+                    $this->MultiCell($columns[4]['w'], 4, str("$fname$fdetails"), 0, $columns[4]['align'], false, 3);
+                    $oldPosX += $columns[4]['w'];
+
+                    if ($this->GetY() > $maxheight)
+                        $maxheight = $this->GetY();
+
+                    $this->SetFont('Arial', '', 10);
+                    $this->SetY($oldPosY);
+                    $this->SetX($oldPosX);
+                    $this->MultiCell($columns[5]['w'], 4, str(trim($module->text ?? '')), 0, $columns[5]['align'], false, 0);
+                    $oldPosX += $columns[5]['w'];
+
+                    if ($this->GetY() > $maxheight)
+                        $maxheight = $this->GetY();
+
+                    $this->SetFont('Arial', '', 10);
+                    $this->SetY($oldPosY);
+                    $this->SetX($oldPosX);
+                    $this->MultiCell($columns[6]['w'], 4, str(trim($module->desc ?? '')), 0, $columns[6]['align'], false, 0);
+                    $oldPosX += $columns[6]['w'];
+
+                    if ($this->GetY() > $maxheight)
+                        $maxheight = $this->GetY();
+
+                    $this->SetY($maxheight + 4.6);
+                }
+            }
+
+            if ($rowIsEmpty) {
+                $this->SetFont('Arial', '', 8);
+                $this->SetTextColor(100, 100, 100);
+                $this->SetX($this->pageMargin + $columns[0]['w'] + 5);
+                $this->Cell(0, 8, str(_("vide")), 0, 0, 'L');
+
+                $this->Ln(9);
+            }
+
+            $this->Ln(3);
+        }
+    }
+
+    function AddModuleListPage()
+    {
+        global $switchboard, $printOptions, $schemaFunctions;
+
+        $this->grid = false;
+        $this->subTitle = _("Liste des modules");
+        $this->StartPageGroup();
+        $this->AddPage('P', 'A4', 0);
+        $this->SetVisibility('all');
+
+        $this->SetY($this->pageMargin + 3);
+        $oldPosX = $this->pageMargin;
+
+        $modules = [];
+
+        $totalRows = count($switchboard->rows);
+        for ($i = 0; $i < $totalRows; $i++) {
+            $totalModules = count($switchboard->rows[$i]);
+            for ($j = 0; $j < $totalModules; $j++) {
+                $module = $switchboard->rows[$i][$j];
+                if (!is_null($module) && ($module->func ?? '') !== '' && ($module->func ?? '') !== 'o'  && !$module->free) {
+                    $fname = _(trim(array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['name'] ?? '-') : ''));
+                    $ftype = trim(array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['hasType'] ? sprintf(_('Type %s'), trim($module->type)) : '') : '');
+                    $fcrb = trim(array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['hasCrb'] && trim($module->crb) !== "" ? sprintf(_('Courbe %s'), trim($module->crb)) : '') : '');
+                    $fsensibility = trim(array_key_exists($module->func, $schemaFunctions) ? trim($schemaFunctions[$module->func]['hasType'] ? $module->sensibility : '') : '');
+                    $fcurrent = trim($module->current ?? "");
+                    $fpole = trim($module->pole ?? '');
+                    $fdetails = array_values(array_filter([trim($fname), trim($ftype), trim($fsensibility), trim($fcrb), trim($fcurrent), trim($fpole)], fn($v) => $v !== ''));
+                    $fdetails = implode('  ', $fdetails);
+                    if (!isset($modules[$fdetails])) {
+                        $modules[$fdetails] = 0;
+                    }
+                    $modules[$fdetails]++;
+                }
+            }
+        }
+        ksort($modules);
+
+        $columns = [
+            ['id' => 'name', 'text' => _('Désignation'), 'w' => 170, 'align' => 'L'],
+            ['id' => 'quantity', 'text' => _('Quantité'), 'w' => 20, 'align' => 'R'],
+        ];
+        $this->SetFont('Arial', 'B', 11);
+        $this->SetTextColor(0, 0, 0);
+        foreach ($columns as $column) {
+            $this->SetX($oldPosX);
+            $this->Cell($column['w'], 7, str($column['text']), 0, 0, $column['align']);
+            $oldPosX += $column['w'];
+        }
+        $this->Ln(12);
+        $this->SetFillColor(220, 220, 220);
+        $this->Rect($this->pageMargin, $this->GetY() - 2.5, $this->GetPageWidth() - $this->pageMargin - $this->pageMargin, 0.5, 'F');
+
+        $this->SetFont('Arial', '', 10);
+        $this->SetTextColor(0, 0, 0);
+        $vls = array_values($modules);
+        $counterMax = count($vls) > 0 ? max($vls) : 0;
+        foreach ($modules as $k => $v) {
+            $oldPosX = $this->pageMargin;
+
+            $this->SetX($oldPosX);
+            $this->Cell($columns[0]['w'], 8, str($k), 0, 0, 'L');
+
+            $counter = str_pad("{$v}", $counterMax < 10 ? 2 : strlen(strval($counterMax)), ' ', STR_PAD_LEFT);
+            $this->SetX($oldPosX + $columns[0]['w']);
+            $this->Cell($columns[1]['w'], 8, str($counter), 0, 0, 'R');
+
+            $this->Ln(7);
+            $this->SetDrawColor(220, 220, 220);
+            $this->Line($this->pageMargin, $this->GetY() + 0.3, $this->GetPageWidth() - $this->pageMargin, $this->GetY() + 0.3);
+        }
+    }
+}
+
+
+/*if (isset($_GET['require'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $requirements = $this->svg2png->GetRequirements();
+    echo json_encode($requirements);
+    exit();
+}*/
+
+
+if (
+    !isset($_POST['switchboard']) ||
+    !isset($_POST['printOptions']) ||
+    !isset($_POST['tv'])
+) {
+    echo _("<b>Chargement du document impossible.</b><br />Veuillez relancer une impression directement via l'application.");
+    exit;
+}
+
+$switchboard = json_decode($_POST['switchboard']);
+$printOptions = json_decode($_POST['printOptions']);
+$tv = json_decode($_POST['tv']);
+$auto = intval(trim(($_POST['auto'] ?? '0'))) === 1;
+$schemaGridColor = explode(',', trim($_POST['schemaGridColor'] ?? ''));
+$isDev = intval(trim(($_POST['isDev'] ?? '0'))) === 1;
+
+if (!is_array($schemaGridColor) || count($schemaGridColor) !== 3)
+    $schemaGridColor = [230, 230, 230];
+if ($schemaGridColor[0] < 0 || $schemaGridColor[0] > 255)
+    $schemaGridColor[0] = 230;
+if ($schemaGridColor[1] < 0 || $schemaGridColor[1] > 255)
+    $schemaGridColor[1] = 230;
+if ($schemaGridColor[2] < 0 || $schemaGridColor[2] > 255)
+    $schemaGridColor[2] = 230;
+$labelsCutLines = intval(trim(($_POST['labelsCutLines'] ?? '0'))) === 1;
+
+$hasSchema = $printOptions->schema === true;
+$hasSummary = $printOptions->summary === true;
+$hasLabels = $printOptions->labels === true;
+$hasModuleList = $printOptions->modulelist === true;
+$hasOnlyLabels = $hasLabels && !$hasSchema && !$hasSummary && !$hasModuleList;
+
+$summaryPrintFormat = strtoupper(trim((string) ($printOptions->pdfOptions?->summaryPrintFormat ?? 'A4')));
+if ($summaryPrintFormat !== 'A4' && $summaryPrintFormat !== 'A3')
+    $summaryPrintFormat = 'A4';
+
+$labelsPrintFormat = strtoupper(trim((string) ($printOptions->pdfOptions?->labelsPrintFormat ?? 'A4')));
+if ($labelsPrintFormat !== 'A4' && $labelsPrintFormat !== 'A3')
+    $labelsPrintFormat = 'A4';
+
+$schemaPrintFormat = strtoupper(trim((string) ($printOptions->pdfOptions?->schemaPrintFormat ?? 'A4')));
+if ($schemaPrintFormat !== 'A4' && $schemaPrintFormat !== 'A3')
+    $schemaPrintFormat = 'A4';
+
+$schemaFolioStart = intval($printOptions->pdfOptions?->schemaFolioStart ?? 1);
+
+
+$flattenModules = [];
+
+$sources = array_values(array_filter($switchboard->sources ?? [], fn($s) => is_object($s) && $s->id));
+$switchboard->sources = $sources;
+$findSource = function ($id) use ($sources) {
+    return array_find($sources, fn($s) => $s->id === $id);
+};
+
+$rpCnt = 1;
+$rps = [];
+$autoAddRps = $switchboard->autoAddRps ?? false;
+
+foreach ($switchboard->rows as $row) {
+    foreach ($row as $module) {
+        if (is_null($module) || is_null($module?->id ?? null) || is_null($module?->func ?? null)) continue;
+
+        if (!is_string($module->func) || strlen(trim($module->func)) === 0) continue;
+
+        $fc = trim($module->func ?? "");
+        $pi = trim($module->parentId ?? "-");
+        $s = $findSource(trim($module->srcId ?? ""));
+
+        if ($pi === "") {
+            if ($fc === "rp") {
+                $ks = $s?->id ?? "-";
+                if (!isset($rps[$ks])) {
+                    $rps[$ks] = (object)[...(array)$module, '_auto' => false];
+                }
+            }
+        }
+
+        $flattenModules[] = $module;
+    }
+}
+
+$flattenModules = array_values(array_filter(array_map(function ($module) use ($findSource, $autoAddRps) {
+    global $rps, $rpCnt;
+
+    if ($autoAddRps) {
+        $fc = trim($module->func ?? "");
+        $pi = trim($module->parentId ?? "-");
+        $s = $findSource(trim($module->srcId ?? ""));
+
+        if ($pi === "") {
+            if ($fc !== "") {
+                $ks = $s?->id ?? "-";
+
+                $rpBase = (object)[
+                    'id' => "RP Auto " . $rpCnt,
+                    'kcId' => "",
+                    'parentId' => "",
+                    'srcId' => $ks,
+                    'func' => "rp",
+                    'text' => "Répartiteur de branchement",
+                    '_auto' => true,
+                ];
+
+                $rpCnt++;
+
+                $id = $rpBase->id;
+                if (isset($rps[$ks])) {
+                    $id = $rps[$ks]->id;
+                } else {
+                    $rps[$ks] = $rpBase;
+                }
+
+                return $fc !== "rp"
+                    ? (object)[...(array)$module, 'srcId' => "", 'parentId' => $id]
+                    : null;
+            }
+        }
+    }
+
+    return $module;
+}, $flattenModules), fn($m) => !is_null($m)));
+
+function getCurrent($module)
+{
+    $c = explode("/", ($module?->current ?? "0A"));
+    if (count($c) > 0)
+        return intval(
+            preg_replace("/\D/", "", $c[count($c) - 1]),
+            10,
+        );
+    return 0;
+};
+
+function getSimplyPole($module)
+{
+    $p = strtoupper(trim($module?->pole ?? "1P+N"));
+    $pc = preg_replace("/\D/", "", $p);
+    if (($pc === 1 || $pc === 3) && str_contains($p, '+N')) {
+        $pc++;
+    }
+    if ($pc < 2) {
+        $pc = 2;
+    }
+    if ($pc > 4) {
+        $pc = 4;
+    }
+    return $pc;
+};
+
+if ($autoAddRps) {
+    $tm = [];
+
+    foreach (array_values($rps) as $rp) {
+
+        $f = array_values(array_filter($flattenModules, function ($m) use ($rp) {
+            $ret = $m->parentId === $rp->id;
+            return $ret;
+        }));
+
+        if (count($f) === 1) {
+            $tm[$f[0]->id] = (object)['from' => $rp->id, 'parentId' => $rp->parentId, 'srcId' => $rp->srcId];
+        } else {
+            $childsCount = count(array_values(array_filter($flattenModules, fn($m) => $m->parentId === $rp->id)));
+            $remark = ($rp?->remark ?? "") . "\r\nIl est préconisé d'utiliser un répartiteur avec minimum " . $childsCount . " départ" . ($childsCount > 1 ? "s" : "");
+
+            if ($rp->_auto === true) {
+                $childsCurrent = array_map(fn($m) => getCurrent($m), array_values(array_filter($flattenModules, fn($m) => $m->parentId === $rp->id)));
+                $childsPole = array_map(
+                    fn($m) => getSimplyPole($m),
+                    array_values(array_filter($flattenModules, fn($m) => $m->parentId === $rp->id))
+                );
+
+                $flattenModules[] = (object)[
+                    ...(array)$rp,
+                    'current' => max($childsCurrent) . "A",
+                    'pole' => max($childsPole) . "P",
+                    'remark' => $remark
+                ];
+            } else {
+                $flattenModules[] = (object)[
+                    ...(array)$rp,
+                    'remark' => $remark
+                ];
+            }
+        }
+    }
+
+    foreach (array_keys($tm) as $k) {
+        $flattenModules = array_map(function ($m) use ($k, $tm) {
+            if ($m->id === $k) {
+                return (object)[
+                    ...(array)$m,
+                    'parentId' => $tm[$k]->parentId,
+                    'srcId' => $tm[$k]->srcId
+                ];
+            }
+
+            return $m;
+        }, $flattenModules);
+    }
+}
+
+
+
+foreach ($flattenModules as $module) {
+    $kcId = trim($module->kcId ?? '');
+    $kcId_a = explode('|', $kcId);
+
+    foreach ($kcId_a as $kcId_item) {
+        $kcModule = array_values(array_filter($flattenModules, fn($module) => $module->id === trim($kcId_item)));
+        if (count($kcModule) === 1) {
+            $kcModule = $kcModule[0];
+
+            if (property_exists($module, 'partialKc')) {
+                if ($module->partialKc === true && !existsInFlattenModules($flattenModules, '| ' . $module->id)) {
+                    $flattenModules[] = (object) array_merge((array) $module, [
+                        'kcId' => '',
+                        'id' => '| ' . $module->id,
+                        'parentId' => $module->id,
+                        'func' => 'o',
+                        'icon' => $module->icon,
+                        'text' => $module->text
+                    ]);
+                }
+            }
+
+            $flattenModules[] = (object) array_merge((array) $kcModule, [
+                'kcId' => '',
+                'id' => '¤_' . $kcModule->id,
+                'parentId' => $module->id,
+                'func' => 'k',
+                'icon' => $module->icon,
+                'text' => property_exists($module, 'partialKc') && $module->partialKc === true ? $kcModule->text : $module->text,
+                'desc' => property_exists($module, 'partialKc') && $module->partialKc === true ? $kcModule->desc : $module->desc,
+                'pole' => $module->pole,
+                'wire' => $module->wire ?? ''
+            ]);
+        }
+    }
+
+    if ($schemaFunctions[$module->func]['hasShareWithChilds'] === true && property_exists($module, 'onlyChilds') && $module->onlyChilds === false) {
+        $flattenModules[] = (object) array_merge((array) $module, [
+            'kcId' => '',
+            'onlyChilds' => true,
+            'partialKc' => false,
+            'id' => '|_' . $module->id,
+            'parentId' => $module->id,
+            'func' => 'o',
+            'icon' => $module->icon,
+            'text' => $module->text
+        ]);
+    }
+}
+
+$pdf = new TiquettesPDF();
+
+$fromName = trim($switchboard?->firstPageInfos?->from?->name ?? "");
+$pdf->SetAuthor($fromName !== "" ? $fromName : 'tiquettes.fr' . ' ' . $tv, true);
+$pdf->SetCreator($fromName !== "" ? $fromName : 'tiquettes.fr' . ' ' . $tv, true);
+$pdf->SetTitle(sprintf(_("Projet '%s'"), $switchboard->prjname), true);
+$pdf->SetSubject(sprintf(_("Projet d'un tableau électrique réalisé avec l'application tiquettes.fr %s (%s)."), $tv, 'https://www.tiquettes.fr/app/'), true);
+$pdf->SetCompression(true);
+$pdf->SetDisplayMode('real', 'default');
+$pdf->SetMargins(10, 10);
+$pdf->SetAutoPageBreak('auto', $pdf->pageBottomMargin - 1);
+$pdf->AliasNbPages();
+$pdf->SetGridColor($schemaGridColor);
+$pdf->SetShowCutLines($labelsCutLines);
+
+if ($printOptions->firstPage === true)
+    $pdf->AddFirstPage();
+if ($printOptions->schema === true)
+    $pdf->AddSchemaPage();
+if ($printOptions->summary === true)
+    $pdf->AddSummaryPage();
+if ($printOptions->modulelist === true)
+    $pdf->AddModuleListPage();
+if ($printOptions->labels === true)
+    $pdf->AddLabelsPage();
+
+if ($auto)
+    $pdf->AutoPrint(true);
+
+headers_no_cache();
+echo $pdf->Output('I', sprintf(_("Projet %s - Tiquettes %s.pdf"), $switchboard->prjname, $tv), true);

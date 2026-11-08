@@ -1,0 +1,69 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": [
+			"**",
+			"!!**/dist",
+			"!**/*.svg",
+			"!**/*batik*",
+			"!**/*fpdf*",
+			"!**/*php-jwt*",
+			"!**/*PHPMailer*"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab"
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"style": {
+				"noDescendingSpecificity": "off"
+			},
+			"complexity": {
+				"noImportantStyles": "off"
+			},
+			"performance": {
+				"noAccumulatingSpread": "off"
+			},
+			"correctness": {
+				"useExhaustiveDependencies": "off"
+			},
+			"a11y": {
+				"noStaticElementInteractions": "off",
+				"useKeyWithClickEvents": "off",
+				"useKeyWithMouseEvents": "off",
+				"noLabelWithoutControl": "off",
+				"noNoninteractiveTabindex": "off",
+				"noAutofocus": "off",
+				"noPositiveTabindex": "off"
+			},
+			"suspicious": {
+				"noArrayIndexKey": "off"
+			},
+			"security": {
+				"noDangerouslySetInnerHtml": "off"
+			}
+		}
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double"
+		}
+	},
+	"assist": {
+		"enabled": true,
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	}
+}
