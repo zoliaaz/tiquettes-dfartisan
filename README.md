@@ -19,9 +19,12 @@ son auteur. Cette adaptation ajoute seulement ce qu'il faut pour l'utiliser depu
   L'impression passe par le navigateur (page de garde, étiquettes à la taille exacte des modules, schéma, nomenclature) ;
   « Microsoft Print to PDF » donne un fichier PDF. L'export pour étiqueteuses, qui demande le serveur de tiquettes.fr,
   est retiré.
-- **Étiquettes imprimées nettes** : pictogrammes insérés en SVG (vectoriels) au lieu d'images colorées par un filtre
-  CSS, que Firefox imprime en image basse résolution ; options du menu Imprimer prises en compte : calibre sous chaque
-  module, lignes de coupe avec ciseaux, format A4 ou A3.
+- **Étiquettes nettes à l'impression par le navigateur** : sur tiquettes.fr, le PDF est produit par le moteur de rendu
+  PDF de Tiquettes, en haute définition. Cette version hors ligne n'utilise pas ce moteur : elle imprime avec le
+  navigateur. Or l'impression de Firefox transforme en image (de résolution limitée) les éléments colorés par un filtre
+  CSS, ce qu'utilise l'interface pour colorer les pictogrammes. Pour l'impression, les pictogrammes sont donc insérés
+  directement en SVG, déjà colorés, et restent vectoriels. Les options du menu Imprimer sont prises en compte : calibre
+  sous chaque module, lignes de coupe avec ciseaux, format A4 ou A3.
 - **Schéma imprimé en folios** (comme le PDF de tiquettes.fr) : feuilles A4 paysage avec « Schéma unifilaire - Folio N »,
   nom du tableau et révision, trait, pagination et version de Tiquettes ; chaque groupe reste entier sur sa feuille.
 - **Schéma** : bobine des télérupteurs et contacteurs dessinée à l'horizontale (symbole moins haut) ; à l'impression,
